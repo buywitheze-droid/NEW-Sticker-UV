@@ -49,6 +49,7 @@ R2_ACCOUNT_ID = "c4b1713470a4eedc5c8324c510bfde87"
 R2_ACCESS_KEY_ID = "effccbf417b9f9533d6cc4bcdef70c26"
 R2_SECRET_ACCESS_KEY = "4e59ce1a4feb5067059e8ac284ab615854cb3d6494e32967eedb4f4f730a5599"
 OFFLOAD_SECRET = "6a2a0aa10106cbd9f7798d9434d287dc2c9f91ee9ef0153b86a24512d39169a3"
+GOOGLE_AUTH_ENABLED = "false"
 
 [userenv.development]
 GOOGLE_CALLBACK_URL = "https://d1a04f93-0dfd-46a0-8bc8-4e8dba44fdd3-00-nstcvm1ojjpz.kirk.replit.dev/api/auth/google/callback"

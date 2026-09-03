@@ -40,6 +40,7 @@ function googleCallbackUrl(): string | undefined {
 
 export function isGoogleAuthConfigured(): boolean {
   return Boolean(
+    process.env.GOOGLE_AUTH_ENABLED === "true" &&
     process.env.GOOGLE_CLIENT_ID &&
     process.env.GOOGLE_CLIENT_SECRET &&
     googleCallbackUrl()
