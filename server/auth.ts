@@ -1,6 +1,8 @@
 import bcrypt from "bcryptjs";
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
+import { Strategy as GoogleStrategy, type Profile, type VerifyCallback } from "passport-google-oauth20";
+import { randomBytes } from "crypto";
 import type { Request, Response, NextFunction } from "express";
 import { storage } from "./storage";
 import { ADMIN_ROLE, type User as AppUser } from "@shared/schema";
@@ -28,6 +30,62 @@ export async function verifyPassword(password: string, stored: string): Promise<
   return bcrypt.compare(password, stored);
 }
 
+function googleCallbackUrl(): string | undefined {
+  const explicit = process.env.GOOGLE_CALLBACK_URL?.trim();
+  if (explicit) return explicit;
+
+  const appUrl = process.env.APP_URL?.trim().replace(/\/$/, "");
+  return appUrl ? `${appUrl}/api/auth/google/callback` : undefined;
+}
+
+export function isGoogleAuthConfigured(): boolean {
+  return Boolean(
+    process.env.GOOGLE_CLIENT_ID &&
+    process.env.GOOGLE_CLIENT_SECRET &&
+    googleCallbackUrl()
+  );
+}
+
+function verifiedGoogleEmail(profile: Profile): string | undefined {
+  const email = profile.emails?.find((candidate) => candidate.verified)?.value;
+  return email?.trim().toLowerCase();
+}
+
+async function resolveGoogleUser(profile: Profile): Promise<AppUser> {
+  const email = verifiedGoogleEmail(profile);
+  if (!email) {
+    throw new Error("Google account does not provide a verified email address");
+  }
+
+  const existing = await storage.getUserByEmail(email);
+  if (existing) {
+    if (!existing.emailVerified) {
+      return (await storage.updateUser(existing.id, { emailVerified: true })) ?? existing;
+    }
+    return existing;
+  }
+
+  const passwordHash = await hashPassword(randomBytes(32).toString("base64url"));
+  try {
+    const user = await storage.createUser({
+      email,
+      passwordHash,
+      name: profile.displayName?.trim() || undefined,
+    });
+    return (await storage.updateUser(user.id, { emailVerified: true })) ?? user;
+  } catch (error) {
+    // Two simultaneous first-time callbacks can race on users.email's unique constraint.
+    const racedUser = await storage.getUserByEmail(email);
+    if (racedUser) {
+      if (!racedUser.emailVerified) {
+        return (await storage.updateUser(racedUser.id, { emailVerified: true })) ?? racedUser;
+      }
+      return racedUser;
+    }
+    throw error;
+  }
+}
+
 export function configurePassport(): void {
   passport.use(
     new LocalStrategy(
@@ -51,6 +109,26 @@ export function configurePassport(): void {
       }
     )
   );
+
+  if (isGoogleAuthConfigured()) {
+    passport.use(
+      new GoogleStrategy(
+        {
+          clientID: process.env.GOOGLE_CLIENT_ID!,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+          callbackURL: googleCallbackUrl()!,
+          state: true,
+        },
+        async (_accessToken: string, _refreshToken: string, profile: Profile, done: VerifyCallback) => {
+          try {
+            done(null, await resolveGoogleUser(profile));
+          } catch (error) {
+            done(error as Error);
+          }
+        }
+      )
+    );
+  }
 
   passport.serializeUser((user, done) => {
     done(null, user.id);

@@ -11,6 +11,7 @@ import { Form, FormField, FormItem, FormLabel, FormControl, FormDescription, For
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Button } from "@/components/ui/button";
+import GoogleAuthButton, { AuthMethodDivider } from "@/components/google-auth-button";
 
 // Same rules as the server's registerSchema, but `name` allows an empty string (optional).
 const formSchema = withConfirmPassword(
@@ -63,6 +64,8 @@ export default function RegisterPage() {
         </span>
       }
     >
+      <GoogleAuthButton label="Sign up with Google" />
+      <AuthMethodDivider />
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <FormField

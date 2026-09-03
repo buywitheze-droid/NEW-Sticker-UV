@@ -2,7 +2,7 @@ import type { Express, Request } from "express";
 import passport from "passport";
 import { randomBytes, createHash } from "crypto";
 import { storage } from "../storage";
-import { hashPassword, isEmailVerificationRequired } from "../auth";
+import { hashPassword, isEmailVerificationRequired, isGoogleAuthConfigured } from "../auth";
 import { sendMail, isMailerConfigured } from "../lib/mailer";
 import { checkRateLimit } from "../lib/rate-limit";
 import { requireCsrf } from "../lib/csrf";
@@ -225,6 +225,32 @@ export function registerAuthRoutes(app: Express): void {
       });
     })(req, res, next);
   });
+
+  app.get("/api/auth/google", (req, res, next) => {
+    if (!isGoogleAuthConfigured()) {
+      return res.redirect("/login?oauth_error=google_not_configured");
+    }
+    passport.authenticate("google", {
+      scope: ["profile", "email"],
+      prompt: "select_account",
+    })(req, res, next);
+  });
+
+  app.get(
+    "/api/auth/google/callback",
+    (req, res, next) => {
+      if (!isGoogleAuthConfigured()) {
+        return res.redirect("/login?oauth_error=google_not_configured");
+      }
+      next();
+    },
+    passport.authenticate("google", {
+      failureRedirect: "/login?oauth_error=google",
+    }),
+    (_req, res) => {
+      res.redirect("/");
+    }
+  );
 
   app.post("/api/auth/logout", (req, res) => {
     req.logout((err) => {

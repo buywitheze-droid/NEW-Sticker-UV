@@ -8,6 +8,7 @@ import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Button } from "@/components/ui/button";
+import GoogleAuthButton, { AuthMethodDivider } from "@/components/google-auth-button";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -17,6 +18,7 @@ export default function LoginPage() {
     resolver: zodResolver(loginSchema),
     defaultValues: { email: "", password: "" },
   });
+  const oauthError = new URLSearchParams(window.location.search).get("oauth_error");
 
   const onSubmit = async (values: LoginInput) => {
     try {
@@ -39,6 +41,15 @@ export default function LoginPage() {
         </span>
       }
     >
+      <GoogleAuthButton />
+      <AuthMethodDivider />
+      {oauthError && (
+        <p className="mb-4 text-sm font-medium text-destructive">
+          {oauthError === "google_not_configured"
+            ? "Google sign-in is not configured yet."
+            : "Google sign-in could not be completed. Please try again."}
+        </p>
+      )}
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <FormField
