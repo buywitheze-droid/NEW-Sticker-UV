@@ -251,6 +251,17 @@ function processRemovalInline(
   console.log('[BG-DIAG-DIGEST]', formatBgRemovalDigest(diag));
 }
 
+export async function removeBackgroundFromCanvas(
+  canvas: HTMLCanvasElement,
+  threshold: number = 95,
+): Promise<void> {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("Failed to get canvas context");
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  processRemovalInline(imageData.data, canvas.width, canvas.height, threshold);
+  ctx.putImageData(imageData, 0, 0);
+}
+
 export async function removeBackgroundFromImage(
   image: HTMLImageElement,
   threshold: number = 95,

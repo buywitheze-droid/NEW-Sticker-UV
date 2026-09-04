@@ -50,6 +50,11 @@ export interface ImageInfo {
    * a blurry / low-DPI source QR can opt in for crisp prints.
    */
   qrRerenderEnabled?: boolean;
+  /** Full-resolution print source used by the updated Spot UV sheet builder. */
+  exportBlob?: Blob;
+  exportCrop?: { x: number; y: number; width: number; height: number };
+  exportPixelWidth?: number;
+  exportPixelHeight?: number;
 }
 
 export type ContourMode = 'smooth' | 'scattered';
@@ -94,6 +99,11 @@ export interface ShapeSettings {
   shapeWidthOverride?: number;
   shapeHeightOverride?: number;
   lockShapeAspect?: boolean;
+  rotation?: number;
+  widthInches?: number;
+  heightInches?: number;
+  offsetX?: number;
+  offsetY?: number;
 }
 
 export type CutlineVisibility = 'thin' | 'normal' | 'bold';
