@@ -22,7 +22,7 @@ export default function AccountMenu() {
   if (!isAuthenticated || !user) {
     return (
       <Link href="/login">
-        <Button variant="outline" size="sm" className="text-xs">Sign in</Button>
+        <Button variant="outline" size="sm" className="text-xs border-white/40 bg-white/10 text-white hover:bg-white/20 hover:text-white">Sign in</Button>
       </Link>
     );
   }

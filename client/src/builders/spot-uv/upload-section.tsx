@@ -1,0 +1,200 @@
+import { useCallback, useState } from "react";
+import { Upload, Sparkles, Image, FileText } from "lucide-react";
+import { parsePDF, isPDFFile, type ParsedPDFData } from "./lib/pdf-parser";
+import { isSVGFile } from "./lib/vector-file";
+import type { ParsedSVGData } from "./lib/svg-parser";
+import type { ImageInfo, ResizeSettings } from "./image-editor";
+import {
+  importRasterForEditor,
+  describeBudgetRejection,
+  type PreparedRaster,
+} from "@/lib/prepare-raster-upload";
+
+interface UploadSectionProps {
+  onImageUpload: (file: File, image: HTMLImageElement, prepared?: PreparedRaster) => void;
+  onPDFUpload?: (file: File, pdfData: ParsedPDFData) => void;
+  onSVGUpload?: (file: File, svgData: ParsedSVGData) => void;
+  showCutLineInfo?: boolean;
+  imageInfo?: ImageInfo | null;
+  resizeSettings?: ResizeSettings | null;
+  stickerSize?: number;
+}
+
+export default function UploadSection({ onImageUpload, onPDFUpload, onSVGUpload, showCutLineInfo = false, imageInfo, resizeSettings, stickerSize }: UploadSectionProps) {
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const handleFileUpload = useCallback(async (file: File) => {
+    if (isPDFFile(file)) {
+      if (onPDFUpload) {
+        try {
+          const pdfData = await parsePDF(file);
+          onPDFUpload(file, pdfData);
+        } catch (error) {
+          console.error('Error parsing PDF:', error);
+          alert('Error parsing PDF file. Please try a different file.');
+        }
+      } else {
+        alert('PDF upload not supported.');
+      }
+      return;
+    }
+
+    if (isSVGFile(file)) {
+      if (onSVGUpload) {
+        try {
+          const { parseSVG } = await import('./lib/svg-parser');
+          const svgData = await parseSVG(file);
+          onSVGUpload(file, svgData);
+        } catch (error) {
+          console.error('Error parsing SVG:', error);
+          alert(error instanceof Error ? error.message : 'Error parsing SVG file. Please try a different file.');
+        }
+      } else {
+        alert('SVG upload not supported.');
+      }
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      alert('Please upload an image file (PNG, JPEG), PDF, or SVG.');
+      return;
+    }
+
+    try {
+      await importRasterForEditor(file, {
+        onPrepared: (prepared) => {
+          onImageUpload(file, prepared.previewImage, prepared);
+        },
+        onInline: (inlineFile, image) => {
+          onImageUpload(inlineFile, image);
+        },
+        onReject: (reason, megapixels) => {
+          const { sizeLabel, maxLabel } = describeBudgetRejection(reason, megapixels, file.size);
+          alert(`This image is too large (${sizeLabel}). Maximum is ${maxLabel}.`);
+        },
+        onPrepareError: (err) => {
+          console.error('[prepare-raster-upload] failed:', err);
+          alert(err instanceof Error ? err.message : 'Failed to prepare the image. Please try a different file.');
+        },
+      });
+    } catch (error) {
+      console.error('Error loading image:', error);
+      alert('Failed to load image. Please try a different file.');
+    }
+  }, [onImageUpload, onPDFUpload, onSVGUpload]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      handleFileUpload(files[0]);
+    }
+  }, [handleFileUpload]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragOver(false);
+  }, []);
+
+  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      handleFileUpload(e.target.files[0]);
+    }
+  }, [handleFileUpload]);
+
+  const isEmptyState = !imageInfo;
+
+  return (
+    <div className="w-full">
+      {isEmptyState ? (
+        <div 
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onClick={() => document.getElementById('imageInput')?.click()}
+          className={`
+            relative overflow-hidden rounded-2xl text-center cursor-pointer
+            transition-all duration-300 ease-out
+            bg-[#3a6aa0]
+            border-2 border-dashed
+            ${isDragOver 
+              ? 'border-[#22d3ee] shadow-xl shadow-cyan-500/20 scale-[1.01]' 
+              : 'border-cyan-400/30 hover:border-[#22d3ee] hover:shadow-xl hover:shadow-cyan-500/10'
+            }
+            p-10 sm:p-14
+          `}
+        >
+          <div className="absolute inset-0 opacity-[0.03]" style={{
+            backgroundImage: 'radial-gradient(circle at 1px 1px, currentColor 1px, transparent 0)',
+            backgroundSize: '24px 24px',
+          }} />
+
+          <div className="relative flex flex-col items-center gap-5">
+            <div className={`
+              relative w-20 h-20 rounded-2xl
+              bg-[#0e7490]
+              flex items-center justify-center
+              shadow-lg shadow-cyan-900/40
+              transition-transform duration-300
+              ${isDragOver ? 'scale-110 rotate-3' : 'hover:scale-105'}
+            `}>
+              <Upload className="w-9 h-9 text-white" strokeWidth={2} />
+              <div className="absolute -top-1.5 -right-1.5 w-6 h-6 rounded-full bg-amber-400 flex items-center justify-center shadow-sm">
+                <Sparkles className="w-3.5 h-3.5 text-amber-900" />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <h2 className="text-xl sm:text-2xl font-bold text-[#e8eef6] tracking-tight">
+                Upload your Design
+              </h2>
+              <p className="text-sm sm:text-base text-[#22d3ee] font-medium">
+                Create the perfect sticker
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 mt-1">
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#2d5a8a] border border-white/10 shadow-sm">
+                <Image className="w-3.5 h-3.5 text-[#9fb3c8]" />
+                <span className="text-xs text-[#9fb3c8] font-medium">PNG, JPEG</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#2d5a8a] border border-white/10 shadow-sm">
+                <FileText className="w-3.5 h-3.5 text-[#9fb3c8]" />
+                <span className="text-xs text-[#9fb3c8] font-medium">PDF, SVG</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-[#9fb3c8] mt-1">
+              Drag & drop or click to browse
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div 
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onClick={() => document.getElementById('imageInput')?.click()}
+          className="bg-[#0e7490] hover:bg-[#0891b2] px-4 py-2 rounded-xl shadow-lg shadow-cyan-900/40 hover:shadow-cyan-500/20 cursor-pointer transition-all duration-200 text-center"
+        >
+          <div className="flex items-center gap-2">
+            <Upload className="w-4 h-4 text-white" />
+            <p className="text-white text-sm font-medium">Add/Change Design</p>
+          </div>
+        </div>
+      )}
+      <input 
+        type="file" 
+        id="imageInput" 
+        className="hidden" 
+        accept=".png,.jpg,.jpeg,.pdf,.svg,image/png,image/jpeg,application/pdf,image/svg+xml"
+        onChange={handleFileInputChange}
+      />
+    </div>
+  );
+}
