@@ -4,6 +4,7 @@ import { offloadHealthy } from './offload-health';
 import { traceContourViaOffload } from './offload-client';
 
 const MAX_PROCESSING_DIMENSION = 4000;
+const WORKER_TIMEOUT_MS = 45_000;
 
 // Tighter cap for the main-thread fallback. The silhouette-mask /
 // gap-bridge / morphology pipeline in `createSilhouetteContour` is O(W*H)
@@ -152,6 +153,7 @@ type ProgressCallback = (progress: number) => void;
 class ContourWorkerManager {
   private worker: Worker | null = null;
   private isProcessing = false;
+  private workerTimeout: ReturnType<typeof setTimeout> | null = null;
   private pendingRequest: {
     request: ProcessRequest;
     resolve: (result: WorkerResult) => void;
@@ -188,6 +190,13 @@ class ContourWorkerManager {
     this.lastProcessResult = null;
   }
 
+  private clearWorkerTimeout() {
+    if (this.workerTimeout) {
+      clearTimeout(this.workerTimeout);
+      this.workerTimeout = null;
+    }
+  }
+
   /**
    * Reject anything in flight or queued without tearing the worker down.
    * Cheap counterpart to `recreateWorker()` — call when the design has
@@ -197,6 +206,8 @@ class ContourWorkerManager {
    * and be ignored.
    */
   cancelInFlight(reason: string = 'Cancelled by caller') {
+    const hadActiveRequest = Boolean(this.currentRequest || this.pendingRequest || this.isProcessing);
+    this.clearWorkerTimeout();
     if (this.currentRequest) {
       this.currentRequest.reject(new Error(reason));
       this.currentRequest = null;
@@ -206,6 +217,11 @@ class ContourWorkerManager {
       this.pendingRequest = null;
     }
     this.isProcessing = false;
+    if (hadActiveRequest && this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+      this.workerHealthReady = this.initWorker();
+    }
   }
 
   private async initWorker(): Promise<void> {
@@ -233,6 +249,7 @@ class ContourWorkerManager {
   }
 
   recreateWorker() {
+    this.clearWorkerTimeout();
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
@@ -276,14 +293,23 @@ class ContourWorkerManager {
 
   private handleError(error: ErrorEvent) {
     console.error('Worker error:', error);
+    this.clearWorkerTimeout();
     if (this.currentRequest) {
       this.currentRequest.reject(new Error('Worker crashed'));
-      this.finishProcessing();
     }
-    this.initWorker();
+    if (this.pendingRequest) {
+      this.pendingRequest.reject(new Error('Worker crashed'));
+    }
+    this.currentRequest = null;
+    this.pendingRequest = null;
+    this.isProcessing = false;
+    this.worker?.terminate();
+    this.worker = null;
+    this.workerHealthReady = this.initWorker();
   }
 
   private finishProcessing() {
+    this.clearWorkerTimeout();
     this.currentRequest = null;
     this.isProcessing = false;
 
@@ -386,9 +412,12 @@ class ContourWorkerManager {
 
   // VPS tier, above the existing worker/main-thread ladder — falls straight through to the worker on any offload failure, so a flaky/unconfigured VPS never blocks tracing.
   private async processWithOffloadFallback(request: ProcessRequest, onProgress?: ProgressCallback): Promise<WorkerResult> {
+    onProgress?.(2);
     if (await offloadHealthy()) {
       try {
+        onProgress?.(8);
         const result = await traceContourViaOffload(request);
+        onProgress?.(95);
         // Mirror handleWorkerMessage's cache write (line ~267) — getCachedContourData() is read
         // later by the download/gang-sheet paths, independently of this call's own return value.
         // Without this, a trace that ran via offload leaves that cache stale or null, and a
@@ -399,6 +428,7 @@ class ContourWorkerManager {
         return result;
       } catch (err) {
         console.warn('[ContourWorkerManager] offload failed, falling back to worker:', err);
+        onProgress?.(10);
       }
     }
     return this.processInWorker(request, onProgress);
@@ -407,12 +437,17 @@ class ContourWorkerManager {
   private processInWorker(request: ProcessRequest, onProgress?: ProgressCallback): Promise<WorkerResult> {
     return new Promise((resolve, reject) => {
       if (this.isProcessing) {
+        if (this.pendingRequest) {
+          this.pendingRequest.reject(new Error('Superseded by a newer contour request'));
+        }
         this.pendingRequest = { request, resolve, reject, onProgress };
+        onProgress?.(1);
         return;
       }
 
       this.isProcessing = true;
       this.currentRequest = { resolve, reject, onProgress };
+      onProgress?.(5);
 
       this.worker!.postMessage({
         type: 'process',
@@ -423,6 +458,20 @@ class ContourWorkerManager {
         detectedShapeType: request.detectedShapeType || null,
         detectedShapeBBox: request.detectedShapeInfo?.boundingBox || null
       }, [request.imageData.data.buffer]);
+
+      this.workerTimeout = setTimeout(() => {
+        if (!this.currentRequest) return;
+        const timeoutError = new Error('Contour worker timed out and was reset');
+        this.currentRequest.reject(timeoutError);
+        this.pendingRequest?.reject(timeoutError);
+        this.currentRequest = null;
+        this.pendingRequest = null;
+        this.isProcessing = false;
+        this.workerTimeout = null;
+        this.worker?.terminate();
+        this.worker = null;
+        this.workerHealthReady = this.initWorker();
+      }, WORKER_TIMEOUT_MS);
     });
   }
 
@@ -488,6 +537,12 @@ class ContourWorkerManager {
   }
 
   terminate() {
+    this.clearWorkerTimeout();
+    this.currentRequest?.reject(new Error('Contour worker terminated'));
+    this.pendingRequest?.reject(new Error('Contour worker terminated'));
+    this.currentRequest = null;
+    this.pendingRequest = null;
+    this.isProcessing = false;
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;

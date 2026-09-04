@@ -1967,18 +1967,14 @@ export default function ImageEditor({
       </div>
     )}
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-      {/* Hidden file input for Change Design */}
-      <div className="hidden">
-        <UploadSection
-          onImageUpload={handleImageUpload}
-          onPDFUpload={handlePDFUpload}
-          onSVGUpload={handleSVGUpload}
-          showCutLineInfo={false}
-          imageInfo={imageInfo}
-          resizeSettings={resizeSettings}
-          stickerSize={stickerSize}
-        />
-      </div>
+      {/* Input-only uploader for Change Design; avoids mounting a second upload UI. */}
+      <UploadSection
+        onImageUpload={handleImageUpload}
+        onPDFUpload={handlePDFUpload}
+        onSVGUpload={handleSVGUpload}
+        inputOnly
+        inputId="spot-uv-change-design-input"
+      />
       {/* Left sidebar - Settings. Hidden (not unmounted) in read-only / gangsheet view — still needed for color extraction. */}
       <div className={isReadOnlyView || gangSheetOpen ? "hidden" : "lg:col-span-4 xl:col-span-3 space-y-3"}>
         <ControlsSection
@@ -1998,7 +1994,7 @@ export default function ImageEditor({
           onStepChange={() => {}}
           onRemoveBackground={handleRemoveBackground}
           isRemovingBackground={isRemovingBackground}
-          onChangeDesign={() => document.getElementById('imageInput')?.click()}
+          onChangeDesign={() => document.getElementById('spot-uv-change-design-input')?.click()}
           onClearDesign={imageInfo ? handleClearDesign : undefined}
           onSpotPreviewChange={setSpotPreviewData}
           detectedAlgorithm={detectedAlgorithm}

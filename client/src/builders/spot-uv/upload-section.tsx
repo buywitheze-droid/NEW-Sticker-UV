@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Upload, Sparkles, Image, FileText } from "lucide-react";
 import { parsePDF, isPDFFile, type ParsedPDFData } from "./lib/pdf-parser";
 import { isSVGFile } from "./lib/vector-file";
@@ -18,10 +18,13 @@ interface UploadSectionProps {
   imageInfo?: ImageInfo | null;
   resizeSettings?: ResizeSettings | null;
   stickerSize?: number;
+  inputOnly?: boolean;
+  inputId?: string;
 }
 
-export default function UploadSection({ onImageUpload, onPDFUpload, onSVGUpload, showCutLineInfo = false, imageInfo, resizeSettings, stickerSize }: UploadSectionProps) {
+export default function UploadSection({ onImageUpload, onPDFUpload, onSVGUpload, showCutLineInfo = false, imageInfo, resizeSettings, stickerSize, inputOnly = false, inputId }: UploadSectionProps) {
   const [isDragOver, setIsDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = useCallback(async (file: File) => {
     if (isPDFFile(file)) {
@@ -108,6 +111,20 @@ export default function UploadSection({ onImageUpload, onPDFUpload, onSVGUpload,
   }, [handleFileUpload]);
 
   const isEmptyState = !imageInfo;
+  const fileInput = (
+    <input
+      ref={fileInputRef}
+      type="file"
+      id={inputId}
+      className="hidden"
+      accept=".png,.jpg,.jpeg,.pdf,.svg,image/png,image/jpeg,application/pdf,image/svg+xml"
+      onChange={handleFileInputChange}
+    />
+  );
+
+  if (inputOnly) {
+    return fileInput;
+  }
 
   return (
     <div className="w-full">
@@ -116,7 +133,7 @@ export default function UploadSection({ onImageUpload, onPDFUpload, onSVGUpload,
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
-          onClick={() => document.getElementById('imageInput')?.click()}
+          onClick={() => fileInputRef.current?.click()}
           className={`
             relative overflow-hidden rounded-2xl text-center cursor-pointer
             transition-all duration-300 ease-out
@@ -179,7 +196,7 @@ export default function UploadSection({ onImageUpload, onPDFUpload, onSVGUpload,
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
-          onClick={() => document.getElementById('imageInput')?.click()}
+          onClick={() => fileInputRef.current?.click()}
           className="bg-[#0e7490] hover:bg-[#0891b2] px-4 py-2 rounded-xl shadow-lg shadow-cyan-900/40 hover:shadow-cyan-500/20 cursor-pointer transition-all duration-200 text-center"
         >
           <div className="flex items-center gap-2">
@@ -188,13 +205,7 @@ export default function UploadSection({ onImageUpload, onPDFUpload, onSVGUpload,
           </div>
         </div>
       )}
-      <input 
-        type="file" 
-        id="imageInput" 
-        className="hidden" 
-        accept=".png,.jpg,.jpeg,.pdf,.svg,image/png,image/jpeg,application/pdf,image/svg+xml"
-        onChange={handleFileInputChange}
-      />
+      {fileInput}
     </div>
   );
 }

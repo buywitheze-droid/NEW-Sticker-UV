@@ -574,7 +574,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       contourDebounceRef.current = setTimeout(() => {
         const currentId = ++processingIdRef.current;
         setIsProcessing(true);
-        setProcessingProgress(0);
+        setProcessingProgress(1);
 
         const previewStrokeSettings = { ...strokeSettings, color: '#FF00FF' };
         const workerResizeSettings = {
