@@ -1659,7 +1659,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
                   onTouchStart={handleTouchStart}
                   onTouchMove={handleTouchMove}
                   onTouchEnd={handleTouchEnd}
-                  className={`relative w-full flex items-center justify-center ${isTransparentBg ? 'checkerboard' : ''} ${magicWandMode ? 'spot-uv-hairline-cursor ring-2 ring-fuchsia-400 ring-opacity-70' : spotPaintMode ? 'spot-uv-hairline-cursor' : selectZoomMode ? 'spot-uv-hairline-cursor' : zoom > 1 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'} ${showHighlight ? 'ring-4 ring-indigo-400 ring-opacity-75 transition-shadow duration-300' : ''}`}
+                  className={`relative w-full flex items-center justify-center ${isTransparentBg ? 'checkerboard' : ''} ${magicWandMode ? 'cursor-crosshair ring-2 ring-fuchsia-400 ring-opacity-70' : spotPaintMode ? 'cursor-crosshair' : selectZoomMode ? 'cursor-crosshair' : zoom > 1 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'} ${showHighlight ? 'ring-4 ring-indigo-400 ring-opacity-75 transition-shadow duration-300' : ''}`}
                   style={{ 
                     width: '100%',
                     height: '100%',
