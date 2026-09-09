@@ -6,9 +6,11 @@ export function offloadUrl(): string {
 }
 
 let healthPromise: Promise<boolean> | null = null;
+let unhealthyUntil = 0;
 
 // Empty VITE_OFFLOAD_URL = the kill switch — offload disabled entirely, no network call ever made.
 export function offloadHealthy(): Promise<boolean> {
+  if (Date.now() < unhealthyUntil) return Promise.resolve(false);
   if (healthPromise) return healthPromise;
 
   const url = offloadUrl();
@@ -35,4 +37,10 @@ export function offloadHealthy(): Promise<boolean> {
 // For tests / forced-fallback scenarios.
 export function resetOffloadHealthCache() {
   healthPromise = null;
+  unhealthyUntil = 0;
+}
+
+export function pauseOffloadAfterFailure(cooldownMs: number = 60_000) {
+  healthPromise = null;
+  unhealthyUntil = Date.now() + cooldownMs;
 }

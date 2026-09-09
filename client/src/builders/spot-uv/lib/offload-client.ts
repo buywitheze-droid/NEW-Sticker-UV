@@ -4,6 +4,7 @@ import { apiRequest } from '@/lib/queryClient';
 import type { ContourMode, ContourData, DetectedAlgorithm, DetectedShapeType, DetectedShapeInfo } from './contour-worker-manager';
 
 const REQUEST_TIMEOUT_MS = 60_000;
+const CONTOUR_REQUEST_TIMEOUT_MS = 45_000;
 
 interface OffloadWorkerResult {
   imageData: ImageData;
@@ -34,10 +35,20 @@ function imageDataToPngBase64(imageData: ImageData): string {
   return dataUrl.slice(dataUrl.indexOf(',') + 1);
 }
 
-function pngBase64ToImageData(base64: string): Promise<ImageData> {
+function pngBase64ToImageData(base64: string, signal?: AbortSignal): Promise<ImageData> {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    const handleAbort = () => {
+      img.src = '';
+      reject(new DOMException('Offload request timed out', 'AbortError'));
+    };
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+    signal?.addEventListener('abort', handleAbort, { once: true });
     img.onload = () => {
+      signal?.removeEventListener('abort', handleAbort);
       const canvas = document.createElement('canvas');
       canvas.width = img.width;
       canvas.height = img.height;
@@ -45,7 +56,10 @@ function pngBase64ToImageData(base64: string): Promise<ImageData> {
       ctx.drawImage(img, 0, 0);
       resolve(ctx.getImageData(0, 0, img.width, img.height));
     };
-    img.onerror = () => reject(new Error('offload: failed to decode returned image'));
+    img.onerror = () => {
+      signal?.removeEventListener('abort', handleAbort);
+      reject(new Error('offload: failed to decode returned image'));
+    };
     img.src = `data:image/png;base64,${base64}`;
   });
 }
@@ -67,15 +81,37 @@ export async function traceContourViaOffload(request: {
   previewMode?: boolean;
   detectedShapeType?: DetectedShapeType;
   detectedShapeInfo?: DetectedShapeInfo | null;
-}): Promise<OffloadWorkerResult> {
-  const token = await getOffloadToken();
-  const imagePng = imageDataToPngBase64(request.imageData);
-
+}, onProgress?: (progress: number) => void): Promise<OffloadWorkerResult> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let res: Response;
+  const timer = setTimeout(() => controller.abort(), CONTOUR_REQUEST_TIMEOUT_MS);
+  let progress = 8;
+  const reportProgress = (nextProgress: number) => {
+    progress = Math.max(progress, nextProgress);
+    onProgress?.(progress);
+  };
+  const progressTimer = setInterval(() => {
+    if (progress < 75) reportProgress(Math.min(75, progress + 3));
+  }, 1500);
   try {
-    res = await fetch(`${offloadUrl()}/trace-contour?includeRaster=1`, {
+    reportProgress(10);
+    const token = await Promise.race([
+      getOffloadToken(),
+      new Promise<never>((_, reject) => {
+        controller.signal.addEventListener(
+          'abort',
+          () => reject(new DOMException('Offload request timed out', 'AbortError')),
+          { once: true },
+        );
+      }),
+    ]);
+    if (controller.signal.aborted) throw new DOMException('Offload request timed out', 'AbortError');
+
+    reportProgress(15);
+    const imagePng = imageDataToPngBase64(request.imageData);
+    if (controller.signal.aborted) throw new DOMException('Offload request timed out', 'AbortError');
+
+    reportProgress(20);
+    const res = await fetch(`${offloadUrl()}/trace-contour?includeRaster=1`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
@@ -88,21 +124,26 @@ export async function traceContourViaOffload(request: {
       }),
       signal: controller.signal,
     });
+
+    if (!res.ok) throw new Error(`offload trace-contour failed: ${res.status}`);
+    reportProgress(80);
+    const data = await res.json();
+    if (!data.imagePng) throw new Error('offload trace-contour: no raster in response');
+
+    reportProgress(90);
+    const imageData = await pngBase64ToImageData(data.imagePng, controller.signal);
+    reportProgress(95);
+    return {
+      imageData,
+      imageCanvasX: data.imageCanvasX,
+      imageCanvasY: data.imageCanvasY,
+      contourData: data.contourData,
+      detectedAlgorithm: data.detectedAlgorithm,
+    };
   } finally {
     clearTimeout(timer);
+    clearInterval(progressTimer);
   }
-
-  if (!res.ok) throw new Error(`offload trace-contour failed: ${res.status}`);
-  const data = await res.json();
-  if (!data.imagePng) throw new Error('offload trace-contour: no raster in response');
-
-  return {
-    imageData: await pngBase64ToImageData(data.imagePng),
-    imageCanvasX: data.imageCanvasX,
-    imageCanvasY: data.imageCanvasY,
-    contourData: data.contourData,
-    detectedAlgorithm: data.detectedAlgorithm,
-  };
 }
 
 function bufferToBase64(buffer: ArrayBufferLike): string {

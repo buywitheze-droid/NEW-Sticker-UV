@@ -1,6 +1,6 @@
 import ContourWorker from './contour-worker?worker';
 import { workersHealthy } from './worker-health';
-import { offloadHealthy } from './offload-health';
+import { offloadHealthy, pauseOffloadAfterFailure } from './offload-health';
 import { traceContourViaOffload } from './offload-client';
 
 const MAX_PROCESSING_DIMENSION = 4000;
@@ -412,12 +412,17 @@ class ContourWorkerManager {
 
   // VPS tier, above the existing worker/main-thread ladder — falls straight through to the worker on any offload failure, so a flaky/unconfigured VPS never blocks tracing.
   private async processWithOffloadFallback(request: ProcessRequest, onProgress?: ProgressCallback): Promise<WorkerResult> {
-    onProgress?.(2);
+    let reportedProgress = 0;
+    const reportProgress = (progress: number) => {
+      reportedProgress = Math.max(reportedProgress, progress);
+      onProgress?.(reportedProgress);
+    };
+    reportProgress(2);
     if (await offloadHealthy()) {
       try {
-        onProgress?.(8);
-        const result = await traceContourViaOffload(request);
-        onProgress?.(95);
+        reportProgress(8);
+        const result = await traceContourViaOffload(request, reportProgress);
+        reportProgress(100);
         // Mirror handleWorkerMessage's cache write (line ~267) — getCachedContourData() is read
         // later by the download/gang-sheet paths, independently of this call's own return value.
         // Without this, a trace that ran via offload leaves that cache stale or null, and a
@@ -428,10 +433,12 @@ class ContourWorkerManager {
         return result;
       } catch (err) {
         console.warn('[ContourWorkerManager] offload failed, falling back to worker:', err);
-        onProgress?.(10);
+        pauseOffloadAfterFailure();
+        reportProgress(10);
       }
     }
-    return this.processInWorker(request, onProgress);
+    const monotonicWorkerProgress = (progress: number) => reportProgress(Math.max(10, progress));
+    return this.processInWorker(request, monotonicWorkerProgress);
   }
 
   private processInWorker(request: ProcessRequest, onProgress?: ProgressCallback): Promise<WorkerResult> {

@@ -44,7 +44,26 @@ import {
 } from "./lib/print-preview";
 
 export type { ImageInfo, StrokeSettings, StrokeMode, ResizeSettings, ShapeSettings, StickerSize, LockedContour, SegmentLayer, SegmentationData } from "./lib/types";
-import type { ImageInfo, StrokeSettings, StrokeMode, ResizeSettings, ShapeSettings, StickerSize, LockedContour, SegmentLayer, SegmentationData } from "./lib/types";
+import { STICKER_SIZES, type ImageInfo, type StrokeSettings, type StrokeMode, type ResizeSettings, type ShapeSettings, type StickerSize, type LockedContour, type SegmentLayer, type SegmentationData } from "./lib/types";
+
+const MAX_UPLOAD_SIZE_INCHES = 24;
+
+function fitUploadedDimensions(widthInches: number, heightInches: number) {
+  const longestEdge = Math.max(widthInches, heightInches);
+  if (!(longestEdge > MAX_UPLOAD_SIZE_INCHES)) {
+    return { widthInches, heightInches };
+  }
+  const scale = MAX_UPLOAD_SIZE_INCHES / longestEdge;
+  return {
+    widthInches: Number((widthInches * scale).toFixed(2)),
+    heightInches: Number((heightInches * scale).toFixed(2)),
+  };
+}
+
+function fittingStickerSize(widthInches: number, heightInches: number): StickerSize {
+  const longestEdge = Math.max(widthInches, heightInches);
+  return STICKER_SIZES.find(({ value }) => value >= longestEdge)?.value ?? 24;
+}
 
 export default function ImageEditor({
   onDesignUploaded,
@@ -687,20 +706,17 @@ export default function ImageEditor({
     setCadCutBounds(null);
     setLockedContour(null);
 
+    const fittedDimensions = fitUploadedDimensions(widthInches, heightInches);
     setResizeSettings(prev => ({
       ...prev,
-      widthInches,
-      heightInches,
+      ...fittedDimensions,
     }));
 
-    const maxDim = Math.max(widthInches, heightInches);
-    const validSizes: StickerSize[] = [2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5];
-    const fittingSize = validSizes.find(size => size >= maxDim) || 5.5;
-    setStickerSize(fittingSize as StickerSize);
+    setStickerSize(fittingStickerSize(fittedDimensions.widthInches, fittedDimensions.heightInches));
 
     const shapeDims = calculateShapeDimensions(
-      widthInches,
-      heightInches,
+      fittedDimensions.widthInches,
+      fittedDimensions.heightInches,
       newShapeSettings.type,
       newShapeSettings.offset
     );
@@ -871,9 +887,14 @@ export default function ImageEditor({
     }
     
     setCadCutBounds(null);
-    setStickerSize(4);
-    
-    const { widthInches, heightInches } = calculateImageDimensions(image.width, image.height, dpi);
+    const sourceDimensions = trimmed
+      ? { widthInches: trimmed.widthInches, heightInches: trimmed.heightInches }
+      : { widthInches: pdfData.widthInches, heightInches: pdfData.heightInches };
+    const { widthInches, heightInches } = fitUploadedDimensions(
+      sourceDimensions.widthInches,
+      sourceDimensions.heightInches,
+    );
+    setStickerSize(fittingStickerSize(widthInches, heightInches));
     
     setResizeSettings(prev => ({
       ...prev,
@@ -941,9 +962,14 @@ export default function ImageEditor({
     setStrokeMode('none');
 
     setCadCutBounds(null);
-    setStickerSize(4);
-
-    const { widthInches, heightInches } = calculateImageDimensions(image.width, image.height, dpi);
+    const sourceDimensions = trimmed
+      ? { widthInches: trimmed.widthInches, heightInches: trimmed.heightInches }
+      : { widthInches: svgData.widthInches, heightInches: svgData.heightInches };
+    const { widthInches, heightInches } = fitUploadedDimensions(
+      sourceDimensions.widthInches,
+      sourceDimensions.heightInches,
+    );
+    setStickerSize(fittingStickerSize(widthInches, heightInches));
 
     setResizeSettings(prev => ({
       ...prev,
@@ -964,6 +990,10 @@ export default function ImageEditor({
         const aspectRatio = imageInfo.originalWidth / imageInfo.originalHeight;
         updated.widthInches = parseFloat((newSettings.heightInches * aspectRatio).toFixed(1));
       }
+
+      const fittedDimensions = fitUploadedDimensions(updated.widthInches, updated.heightInches);
+      updated.widthInches = fittedDimensions.widthInches;
+      updated.heightInches = fittedDimensions.heightInches;
       
       // Recalculate bounds with auto-sized shape dimensions
       if (shapeSettings.enabled) {

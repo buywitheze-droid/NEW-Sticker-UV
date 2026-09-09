@@ -112,7 +112,7 @@ export interface ShapeSettings {
 
 export type CutlineVisibility = 'thin' | 'normal' | 'bold';
 
-export type StickerSize = 2 | 2.5 | 3 | 3.5 | 4 | 4.5 | 5 | 5.5 | 6;
+export type StickerSize = 2 | 2.5 | 3 | 3.5 | 4 | 4.5 | 5 | 5.5 | 6 | 8 | 12 | 18 | 24;
 
 export const STICKER_SIZES: { value: StickerSize; label: string }[] = [
   { value: 2, label: '2 inch' },
@@ -124,6 +124,10 @@ export const STICKER_SIZES: { value: StickerSize; label: string }[] = [
   { value: 5, label: '5 inch' },
   { value: 5.5, label: '5.5 inch' },
   { value: 6, label: '6 inch' },
+  { value: 8, label: '8 inch' },
+  { value: 12, label: '12 inch' },
+  { value: 18, label: '18 inch' },
+  { value: 24, label: '24 inch' },
 ];
 
 export interface SpotColorData {
