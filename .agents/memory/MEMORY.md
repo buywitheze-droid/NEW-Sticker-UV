@@ -2,3 +2,4 @@
 - [Spot color alignment](spot-color-alignment.md) — spot tracer must use the exact dims/offsets the design raster is drawn at; stale pixelMap (AR mismatch) is auto-discarded.
 - [Contour component peers](contour-component-selection.md) — components ≥50% of main area are design peers, exempt from orphan area budget; check [ZH:Component] logs when outline drops part of a design.
 - [Authentication account linking](auth-account-linking.md) — trusted third-party sign-ins reuse the stable internal account only after the provider verifies its normalized email.
+- [Contour sizing constraint](contour-sizing-constraint.md) — closing print-filled gaps must not spend the customer's reserved size margin.

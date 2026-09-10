@@ -1,3 +1,4 @@
+import { closeContourInlets } from "./contour-inlet-closing";
 // Shared contour-tracing algorithm, extracted from contour-worker.ts so both the browser worker and a future Node.js service can use the same code.
 import ClipperLib from 'js-clipper';
 import { fitCompositeShape } from './composite-shape-fit';
@@ -1258,6 +1259,12 @@ export function processContour(
 
   const minGapPx = Math.max(2, Math.round(bladeWidthInches * effectiveDPI));
   smoothedPath = enforceMinGap(smoothedPath, minGapPx);
+
+  // The printed bleed fills narrow inlets; keep the die line out of those
+  // filled areas. Zero Hero and detected geometric shapes return above.
+  smoothedPath = closeContourInlets(
+    smoothedPath, Math.max(autoBridgePixels, bleedPixels), vectorCloseMerge,
+  );
 
   if (effectiveMode === 'smooth') {
     const compositeResult = fitCompositeShape(smoothedPath, effectiveDPI);
@@ -4604,13 +4611,8 @@ export function vectorCloseMerge(points: Point[], gapPixels: number): Point[] {
   coShrink.Execute(restoredPaths, -scaledGap); // Negative offset = shrink
   
   if (restoredPaths.length === 0 || restoredPaths[0].length < 3) {
-    console.log('[Worker] vectorCloseMerge: shrink failed, using expanded');
-    // If shrink fails, at least return the expanded version
-    const result = expandedPaths[0].map(p => ({
-      x: p.X / CLIPPER_SCALE,
-      y: p.Y / CLIPPER_SCALE
-    }));
-    return result;
+    console.log('[Worker] vectorCloseMerge: shrink failed, returning original');
+    return points;
   }
   
   console.log('[Worker] vectorCloseMerge: after shrink (-', gapPixels, 'px):', restoredPaths[0].length, 'pts');

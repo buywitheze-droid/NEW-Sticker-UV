@@ -1,0 +1,62 @@
+The problem it solves
+The printed sticker body is drawn by stroking the traced outline with a brush of bleedPixels radius and then filling it. That brush automatically closes any gap narrower than about twice the bleed. The cut path got no matching treatment, so on artwork made of separate pieces (lettering, a badge, a banner) the cut line kept diving into gaps the print had already filled — the magenta line ran through the middle of a solid printed sticker.
+
+Where it goes
+In the contour tracing function, immediately after the path has been traced, welded and simplified (and after any minimum-blade-gap step, if you have one), and before any mode-specific fitting or smoothing — before shape fitting, before Chaikin smoothing.
+
+In my project that's client/src/builders/spot-uv/lib/contour-trace-core.ts, right after this line:
+
+smoothedPath = enforceMinGap(smoothedPath, minGapPx);
+
+and just before if (effectiveMode === 'smooth') {.
+
+The code
+  // Close the narrow inlets between artwork elements before anything treats this as the
+  // die line. The printed body is painted by stroking this same path with a brush of
+  // bleedPixels radius and filling it, which closes every inlet narrower than twice that
+  // radius. Without the matching closing here the cut path keeps diving into inlets the
+  // print has already filled, so the die line runs through the middle of the printed
+  // sticker and between fine lettering instead of around the outside of it.
+  const inletCloseRadius = Math.max(autoBridgePixels, bleedPixels);
+  if (inletCloseRadius > 0 && smoothedPath.length >= 3) {
+    const closedPath = vectorCloseMerge(smoothedPath, inletCloseRadius);
+    // Closing can only add area, never extend the outer extent — but Clipper approximates
+    // round joins, so allow a sub-pixel overshoot and then clamp it back. The sizing fit
+    // reserved an exact margin and this step may not spend any of it. Each side is checked
+    // on its own: equal width and height would not prove the shape has not shifted outward.
+    let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+    for (const p of smoothedPath) {
+      if (p.x < bMinX) bMinX = p.x;
+      if (p.x > bMaxX) bMaxX = p.x;
+      if (p.y < bMinY) bMinY = p.y;
+      if (p.y > bMaxY) bMaxY = p.y;
+    }
+    const closeSlackPx = 0.75;
+    const staysInsideEnvelope = closedPath.every(p =>
+      p.x >= bMinX - closeSlackPx && p.x <= bMaxX + closeSlackPx &&
+      p.y >= bMinY - closeSlackPx && p.y <= bMaxY + closeSlackPx
+    );
+    if (closedPath.length >= 3 && staysInsideEnvelope) {
+      smoothedPath = closedPath.map(p => ({
+        x: Math.min(bMaxX, Math.max(bMinX, p.x)),
+        y: Math.min(bMaxY, Math.max(bMinY, p.y)),
+      }));
+      console.log('[Worker] Inlet closing applied at', inletCloseRadius, 'px:', smoothedPath.length, 'points');
+    } else {
+      console.log('[Worker] Inlet closing rejected, keeping traced contour');
+    }
+  }
+
+What it needs to be in scope
+Three things, all of which already exist in this codebase:
+
+bleedPixels — the same value the printed body is painted with, in the same run and the same scale. Mine is Math.round(bleedInches * effectiveDPI) where bleedInches is 0.02 in preview and 0.10 for export. It's critical you use the same variable the paint uses, not a fresh constant — in a downscaled preview the correct radius is only a couple of pixels.
+autoBridgePixels — Math.round((autoBridging ? autoBridgingThreshold : 0) * effectiveDPI). This is only there so a user-set bridging threshold larger than the bleed still wins. If your other project has no such setting, drop it and use bleedPixels alone.
+vectorCloseMerge(points, gapPixels) — the Clipper helper: offset the polygon out by the gap with round joins, offset it back in by the same amount, union the results, then SimplifyPolygon to strip redundant collinear points. It returns the original points unchanged if either offset fails. If your other project doesn't have this function, say the word and I'll paste the whole thing.
+Two rules that matter
+Skip it on zero-margin (exact-edge) cuts and on detected simple shapes (circle, square, rounded rectangle). In both cases the path is meant to follow the artwork precisely, and closing would weld separate pieces together. In my code those branches return before this point, so nothing extra was needed.
+Don't drop the bounds check. Closing adds area but must never push the outline outward, because the artwork was already sized so the cut lands inside the size the customer paid for. Check each side on its own — comparing overall width and height would pass a shape that shifted sideways.
+How to confirm it worked
+Watch the console for Inlet closing applied at N px. If you see Inlet closing rejected on normal artwork, the closing is pushing the outline outward and something upstream is off.
+
+To measure it properly: sample points along the cut path and, from each, probe outward until you hit the first transparent pixel of the painted body. A healthy cut line sits roughly one bleed inside the paint everywhere. The bad ones show up as a tail of points sitting several times deeper — on the Jersey logo, 122 of 1136 sampled points were 0.2–0.63" inside the printed body before the fix, and zero after.
