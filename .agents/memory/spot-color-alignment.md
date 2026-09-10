@@ -10,3 +10,9 @@ Rule 2: The spot pixelMap is captured from the image at tagging time (≤1000px)
 **Why:** Users saw spot plates shifted/squashed vs the artwork after remove-background/crop/resize; root cause was resizeSettings passed to the spot tracer while the design was drawn at contourImageW/H.
 
 **How to apply:** When adding/altering any download path that emits spot separations, mirror the exact geometry (dims + offsets) of the design draw. Preview and export must also share inclusion semantics and skip morphological closing for exact selections (see exactSelection flag in spot-color-worker).
+
+Rule 3: Requested production separations are required output, not optional enhancements. Abort download/save if their generation fails.
+
+**Why:** An otherwise valid PDF with silently missing White/Gloss plates can be mistaken for a complete print-ready file. Preserving a partial download is worse than showing a retryable error.
+
+**How to apply:** Keep export failures visible to the user; do not add catch-and-continue fallbacks around requested spot-layer generation in individual or gang-sheet exports.

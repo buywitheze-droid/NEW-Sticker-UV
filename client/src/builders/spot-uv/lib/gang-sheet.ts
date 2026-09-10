@@ -858,8 +858,10 @@ export async function downloadGangSheetPDF(
     try {
       await addGangSheetSpotColorsToPDF(pdfDoc, page, spotItems, sheetWidth, sheetHeight, true);
     } catch (err) {
-      // Don't fail the whole PDF if spot color tracing throws — log and skip.
       console.error('[GangSheet] Spot color emission failed:', err);
+      // A PDF missing requested production plates is not a successful export.
+      // Let the panel display the error before any download/save is attempted.
+      throw new Error('Could not generate the gang sheet spot-color layers. Please try again.', { cause: err });
     }
   }
 
