@@ -1,3 +1,4 @@
+- [Spot selection persistence](spot-selection-persistence.md) — delayed QR/region detection must not overwrite newer White/Gloss choices; metadata is not a pixel change.
 - [Preview stability](preview-stability.md) — preserve the visible frame during pixel edits, but invalidate export geometry; canvas sizing must not feed back into layout.
 - [Publishing ports](publishing-ports.md) — Autoscale needs one external port; inspect stray HMR mappings when publishing fails after a successful build.
 - [PDF CutContour grouping](pdf-cutcontour-grouping.md) — contour PDF wraps bg+art+cut into one Form XObject (= Illustrator group); spot CS now nested in form, white/gloss stay separate.

@@ -12,6 +12,7 @@ import { generateContourPDFBase64 } from "./lib/contour-outline";
 import { generateShapePDFBase64, calculateShapeDimensions } from "./lib/shape-outline";
 import { getContourWorkerManager, type DetectedAlgorithm } from "./lib/contour-worker-manager";
 import { extractColorsFromImageAsync, detectColorRegionsAsync, ExtractedColor, type ColorExtractionResult } from "./lib/color-extractor";
+import { mergeDetectedColorRegions } from "./lib/spot-selection-state";
 import { Download, ChevronDown, ChevronUp, Eye, EyeOff, X, Layers, Palette, Pipette, Trash2, Link, Unlink, Settings2, Spline, Shapes } from "lucide-react";
 import SizeInput from "@/components/image-editor/size-input";
 
@@ -217,6 +218,9 @@ export default function ControlsSection({
     });
   }, [spotColorRestore]);
 
+  const spotSourceImage = imageInfo?.image;
+  const spotSourceUrl = spotSourceImage?.src;
+
   useEffect(() => {
     if (!enableSpotColors) {
       extractionRef.current = null;
@@ -224,17 +228,20 @@ export default function ControlsSection({
       setIsExtractingColors(false);
       return;
     }
-    if (imageInfo?.image) {
+    if (spotSourceImage) {
       let cancelled = false;
+      let paletteReady = false;
+      extractionRef.current = null;
       setIsExtractingColors(true);
       setExtractedColors([]);
       const rafId = requestAnimationFrame(() => {
         void (async () => {
           try {
-            const result = await extractColorsFromImageAsync(imageInfo.image, 999);
+            const result = await extractColorsFromImageAsync(spotSourceImage, 999);
             if (cancelled) return;
             extractionRef.current = result;
             setExtractedColors([...result.colors]);
+            paletteReady = true;
             setIsExtractingColors(false);
 
             if (result.width <= 0 || result.height <= 0 || result.colors.length === 0) return;
@@ -245,16 +252,19 @@ export default function ControlsSection({
             const ctx = canvas.getContext('2d');
             let imgData: ImageData | undefined;
             if (ctx) {
-              ctx.drawImage(imageInfo.image, 0, 0, result.width, result.height);
+              ctx.drawImage(spotSourceImage, 0, 0, result.width, result.height);
               imgData = ctx.getImageData(0, 0, result.width, result.height);
             }
 
-            await detectColorRegionsAsync(result.pixelMap, result.width, result.height, result.colors, imgData);
+            // The detector mutates its input. Do not let it mutate displayed
+            // state or replace selections made while its worker was running.
+            const regionColors = result.colors.map(color => ({ ...color }));
+            await detectColorRegionsAsync(result.pixelMap, result.width, result.height, regionColors, imgData);
             if (cancelled) return;
-            setExtractedColors([...result.colors]);
+            setExtractedColors(current => mergeDetectedColorRegions(current, regionColors));
           } catch (err) {
             console.warn('[SpotColors] color extraction failed', err);
-            if (!cancelled) {
+            if (!cancelled && !paletteReady) {
               extractionRef.current = null;
               setExtractedColors([]);
               setIsExtractingColors(false);
@@ -271,7 +281,9 @@ export default function ControlsSection({
       setExtractedColors([]);
       setIsExtractingColors(false);
     }
-  }, [imageInfo, enableSpotColors]);
+  // QR results and other metadata replace imageInfo without changing pixels.
+  // Only actual artwork changes should reset the editable spot selections.
+  }, [spotSourceImage, spotSourceUrl, enableSpotColors]);
 
   // Auto-expand color and scroll to it when user clicks on canvas
   useEffect(() => {
