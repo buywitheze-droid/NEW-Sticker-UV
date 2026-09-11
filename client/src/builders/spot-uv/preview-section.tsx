@@ -452,15 +452,21 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       if (!containerRef.current) return;
       let resizeTimer: ReturnType<typeof setTimeout> | null = null;
       const updateSize = () => {
-        const width = containerRef.current?.clientWidth || 0;
-        const height = containerRef.current?.clientHeight || 0;
+        const container = containerRef.current;
+        if (!container) return;
+        // Match the drawable content box, not the outer box including padding.
+        // This keeps bitmap-to-pointer coordinates aligned on every viewport.
+        const style = getComputedStyle(container);
+        const width = container.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        const height = container.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         const safeWidth = Math.max(220, Math.round(width * dpr));
         const safeHeight = Math.max(220, Math.round(height * dpr));
-        setPreviewDims({
-          width: safeWidth || 360,
-          height: safeHeight || 360
-        });
+        setPreviewDims(previous =>
+          previous.width === safeWidth && previous.height === safeHeight
+            ? previous
+            : { width: safeWidth, height: safeHeight }
+        );
       };
       updateSize();
       const observer = new ResizeObserver(() => {
@@ -536,6 +542,10 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       return `v${CONTOUR_CACHE_VERSION}-${imageInfo.image.src}-${imageInfo.originalWidth}x${imageInfo.originalHeight}-${strokeSettings.width}-${strokeSettings.alphaThreshold}-${strokeSettings.backgroundColor}-${strokeSettings.useCustomBackground}-${strokeSettings.contourMode}-${strokeSettings.autoBridging}-${strokeSettings.autoBridgingThreshold}-${strokeSettings.includeHoles}-${resizeSettings.widthInches}-${resizeSettings.heightInches}-shape:${detectedShapeType || 'none'}-bbox:${bboxKey}`;
     }, [imageInfo, strokeSettings.width, strokeSettings.alphaThreshold, strokeSettings.backgroundColor, strokeSettings.useCustomBackground, strokeSettings.contourMode, strokeSettings.autoBridging, strokeSettings.autoBridgingThreshold, strokeSettings.includeHoles, resizeSettings.widthInches, resizeSettings.heightInches, detectedShapeType, detectedShapeInfo]);
 
+    const contourRequestKey = generateContourCacheKey();
+    const contourPendingRef = useRef(false);
+    const lastRenderedFileRef = useRef<File | null>(null);
+
     useEffect(() => {
       // Clear any pending debounce
       if (contourDebounceRef.current) {
@@ -544,6 +554,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       }
 
       if (!imageInfo || !strokeSettings.enabled || shapeSettings.enabled) {
+        contourPendingRef.current = false;
         contourCacheRef.current = null;
         contourTransformRef.current = null;
         // CRITICAL: invalidate any in-flight worker run AND reset the
@@ -560,11 +571,14 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         return;
       }
 
-      const cacheKey = generateContourCacheKey();
+      const cacheKey = contourRequestKey;
       if (contourCacheRef.current?.key === cacheKey) return;
 
       contourCacheRef.current = null;
       contourTransformRef.current = null;
+      contourPendingRef.current = true;
+      setIsProcessing(true);
+      setProcessingProgress(0);
 
       // Invalidate any in-flight processing results immediately so stale
       // worker responses (e.g. after image enhancement) are discarded.
@@ -598,6 +612,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         ).then((result) => {
           if (processingIdRef.current === currentId) {
             contourCacheRef.current = { key: cacheKey, canvas: result.canvas, downsampleScale: result.downsampleScale, imageCanvasX: result.imageCanvasX, imageCanvasY: result.imageCanvasY };
+            contourPendingRef.current = false;
             setIsProcessing(false);
             if (result.detectedAlgorithm && onDetectedAlgorithm) {
               onDetectedAlgorithm(result.detectedAlgorithm);
@@ -606,17 +621,21 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         }).catch((error) => {
           console.error('Contour processing error:', error);
           if (processingIdRef.current === currentId) {
+            contourPendingRef.current = false;
             setIsProcessing(false);
           }
         });
       }, 100); // 100ms debounce for smoother slider interaction
       
       return () => {
+        ++processingIdRef.current;
         if (contourDebounceRef.current) {
           clearTimeout(contourDebounceRef.current);
         }
       };
-    }, [imageInfo, strokeSettings, resizeSettings, shapeSettings.enabled, generateContourCacheKey, detectedShapeType, detectedShapeInfo]);
+    // Metadata-only image updates (e.g. QR detection) must not cancel and
+    // restart the same trace. The key describes the actual contour inputs.
+    }, [contourRequestKey, strokeSettings.enabled, shapeSettings.enabled]);
 
     // Smooth resize animation: detects dimension changes and animates the canvas
     useLayoutEffect(() => {
@@ -686,6 +705,13 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
+
+      // Keep the last complete frame during a pixel edit. The export cache
+      // remains invalidated above; this preserves only the visible bitmap,
+      // never stale geometry for downloads or gang-sheet placement.
+      if (!gangSheetView && contourPendingRef.current && imageInfo &&
+          lastRenderedFileRef.current === imageInfo.file) return;
+      lastRenderedFileRef.current = imageInfo?.file ?? null;
 
       const canvasWidth = previewDims.width;
       const canvasHeight = previewDims.height;
@@ -1662,7 +1688,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
                   className={`relative w-full flex items-center justify-center ${isTransparentBg ? 'checkerboard' : ''} ${magicWandMode ? 'cursor-crosshair ring-2 ring-fuchsia-400 ring-opacity-70' : spotPaintMode ? 'cursor-crosshair' : selectZoomMode ? 'cursor-crosshair' : zoom > 1 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'} ${showHighlight ? 'ring-4 ring-indigo-400 ring-opacity-75 transition-shadow duration-300' : ''}`}
                   style={{ 
                     width: '100%',
-                    height: '100%',
+                    height: 'auto',
                     aspectRatio: gangSheetView
                       ? `${gangSheetView.settings.sheetWidth} / ${gangSheetView.settings.sheetHeight}`
                       : imageInfo ? `${imageInfo.image.width} / ${imageInfo.image.height}` : '1 / 1',
@@ -1678,6 +1704,10 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
                   ref={canvasRef}
                   className="relative z-10 block"
                   style={{ 
+                    position: 'absolute',
+                    inset: '12px',
+                    width: 'calc(100% - 24px)',
+                    height: 'calc(100% - 24px)',
                     maxWidth: '100%',
                     maxHeight: '100%',
                     transform: `translate(${panX}%, ${panY}%) scale(${zoom * (resizeAnimState?.scale ?? 1)})`,
