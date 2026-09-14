@@ -7,7 +7,7 @@ import SizeInput from "@/components/image-editor/size-input";
 import { ImageInfo, StrokeSettings, ResizeSettings, ShapeSettings, type LockedContour, type SegmentationData } from "./image-editor";
 import { SpotPreviewData } from "./controls-section";
 import { CadCutBounds } from "./lib/cadcut-bounds";
-import { processContourInWorker, type DetectedAlgorithm, type DetectedShapeInfo } from "./lib/contour-worker-manager";
+import { processPreviewContourInWorker, getPreviewContourWorkerManager, type DetectedAlgorithm, type DetectedShapeInfo } from "./lib/contour-worker-manager";
 import { calculateShapeDimensions } from "./lib/shape-outline";
 import { cropImageToContent, getImageBounds } from "./lib/image-crop";
 import { convertPolygonToCurves, gaussianSmoothContour } from "./lib/clipper-path";
@@ -23,6 +23,8 @@ export interface GangSheetCanvasView {
 }
 
 interface PreviewSectionProps {
+  isEnhancing?: boolean;
+  onPreviewStatus?: (image: HTMLImageElement, status: 'processing' | 'ready' | 'error', error?: Error) => void;
   imageInfo: ImageInfo | null;
   strokeSettings: StrokeSettings;
   resizeSettings: ResizeSettings;
@@ -54,7 +56,7 @@ interface PreviewSectionProps {
 }
 
 const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
-  ({ imageInfo, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, spotPreviewData, showCutLineInfo, onDetectedAlgorithm, detectedShapeType, detectedShapeInfo, detectedAlgorithm, onStrokeChange, lockedContour, segmentationData, onSpotColorClick, spotPaintMode, magicWandMode, onMagicWandPick, fileName, onResizeChange, onUndo, onRedo, canUndo, canRedo, readOnly, gangSheetView }, ref) => {
+  ({ imageInfo, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, spotPreviewData, showCutLineInfo, onDetectedAlgorithm, detectedShapeType, detectedShapeInfo, detectedAlgorithm, onStrokeChange, lockedContour, segmentationData, onSpotColorClick, spotPaintMode, magicWandMode, onMagicWandPick, fileName, onResizeChange, onUndo, onRedo, canUndo, canRedo, readOnly, gangSheetView, isEnhancing, onPreviewStatus }, ref) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [zoom, setZoom] = useState(1);
@@ -577,6 +579,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       contourCacheRef.current = null;
       contourTransformRef.current = null;
       contourPendingRef.current = true;
+      onPreviewStatus?.(imageInfo.image, 'processing');
       setIsProcessing(true);
       setProcessingProgress(0);
 
@@ -598,7 +601,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
           outputDPI: 100
         };
 
-        processContourInWorker(
+        processPreviewContourInWorker(
           imageInfo.image,
           previewStrokeSettings,
           workerResizeSettings,
@@ -623,12 +626,14 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
           if (processingIdRef.current === currentId) {
             contourPendingRef.current = false;
             setIsProcessing(false);
+            onPreviewStatus?.(imageInfo.image, 'error', error instanceof Error ? error : new Error(String(error)));
           }
         });
       }, 100); // 100ms debounce for smoother slider interaction
       
       return () => {
         ++processingIdRef.current;
+        getPreviewContourWorkerManager().cancelInFlight('Preview inputs changed');
         if (contourDebounceRef.current) {
           clearTimeout(contourDebounceRef.current);
         }
@@ -710,7 +715,8 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       // remains invalidated above; this preserves only the visible bitmap,
       // never stale geometry for downloads or gang-sheet placement.
       if (!gangSheetView && contourPendingRef.current && imageInfo &&
-          lastRenderedFileRef.current === imageInfo.file) return;
+          (lastRenderedFileRef.current === imageInfo.file ||
+            (isEnhancing && lastRenderedFileRef.current !== null))) return;
       lastRenderedFileRef.current = imageInfo?.file ?? null;
 
       const canvasWidth = previewDims.width;
@@ -1076,16 +1082,21 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         }
       }
       };
-      renderRef.current = doRender;
+      renderRef.current = () => {
+        doRender();
+        if (imageInfo && !contourPendingRef.current) {
+          onPreviewStatus?.(imageInfo.image, 'ready');
+        }
+      };
       if (renderRafRef.current) cancelAnimationFrame(renderRafRef.current);
       renderRafRef.current = requestAnimationFrame(() => {
         renderRafRef.current = null;
-        doRender();
+        renderRef.current?.();
       });
       return () => {
         if (renderRafRef.current) { cancelAnimationFrame(renderRafRef.current); renderRafRef.current = null; }
       };
-    }, [imageInfo, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, backgroundColor, isProcessing, spotPreviewData, previewDims.height, previewDims.width, lockedContour, segmentationData, gangSheetView]);
+    }, [imageInfo, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, backgroundColor, isProcessing, spotPreviewData, previewDims.height, previewDims.width, lockedContour, segmentationData, gangSheetView, isEnhancing, onPreviewStatus]);
 
     useEffect(() => {
       if (!spotPreviewData?.enabled) {

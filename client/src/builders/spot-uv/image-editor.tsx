@@ -134,6 +134,37 @@ export default function ImageEditor({
   });
   const [isSegmenting, setIsSegmenting] = useState(false);
   const [isUpscaling, setIsUpscaling] = useState(false);
+  const qualityPreviewRef = useRef<{
+    image: HTMLImageElement;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    settleTimer?: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const handlePreviewStatus = useCallback((
+    image: HTMLImageElement,
+    status: 'processing' | 'ready' | 'error',
+    error?: Error,
+  ) => {
+    const pending = qualityPreviewRef.current;
+    if (!pending || pending.image !== image) return;
+    if (status !== 'ready') {
+      clearTimeout(pending.settleTimer);
+      pending.settleTimer = undefined;
+      if (status === 'error') pending.reject(error ?? new Error('Could not update the contour preview.'));
+    } else if (!pending.settleTimer) {
+      // Allow debounced margin/shape changes to settle before revealing the
+      // enhanced image. A new contour request cancels this ready window.
+      pending.settleTimer = setTimeout(pending.resolve, 350);
+    }
+  }, []);
+  useEffect(() => () => {
+    const pending = qualityPreviewRef.current;
+    if (pending) {
+      clearTimeout(pending.settleTimer);
+      pending.reject(new Error('Editor closed while updating the preview.'));
+      qualityPreviewRef.current = null;
+    }
+  }, []);
   const [enhanceStage, setEnhanceStage] = useState('');
   const [noCutlinesDialog, setNoCutlinesDialog] = useState<{
     pending: boolean;
@@ -1217,6 +1248,7 @@ export default function ImageEditor({
 
     setIsUpscaling(true);
     setEnhanceStage(`Increasing quality (${scale}x)…`);
+    let previewTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
       const next = await commitSpotUvEdit(
         imageInfo,
@@ -1250,8 +1282,16 @@ export default function ImageEditor({
       );
       if (!next) throw new Error("Could not apply the upscale.");
 
+      const previewReady = new Promise<void>((resolve, reject) => {
+        qualityPreviewRef.current = { image: next.image, resolve, reject };
+        previewTimeout = setTimeout(() => reject(new Error(
+          'The image was enhanced, but its preview timed out. Please try updating the contour again.',
+        )), 60_000);
+      });
+      setEnhanceStage('Finishing the image and contour preview…');
       setImageInfo(next);
       refreshDerivedShapeState(next.image);
+      await previewReady;
       toast({
         title: "Quality increased",
         description: `${srcW}×${srcH} → ${next.exportPixelWidth ?? next.originalWidth}×${next.exportPixelHeight ?? next.originalHeight} (${scale}x)`,
@@ -1264,6 +1304,9 @@ export default function ImageEditor({
         variant: "destructive",
       });
     } finally {
+      clearTimeout(previewTimeout);
+      clearTimeout(qualityPreviewRef.current?.settleTimer);
+      qualityPreviewRef.current = null;
       setIsUpscaling(false);
       setEnhanceStage("");
     }
@@ -2252,6 +2295,8 @@ export default function ImageEditor({
           {/* Preview - Square */}
           <PreviewSection
             ref={canvasRef}
+            isEnhancing={isUpscaling}
+            onPreviewStatus={handlePreviewStatus}
             imageInfo={imageInfo}
             strokeSettings={debouncedStrokeSettings}
             resizeSettings={debouncedResizeSettings}

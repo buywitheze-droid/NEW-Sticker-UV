@@ -4,6 +4,7 @@ import { offloadHealthy, pauseOffloadAfterFailure } from './offload-health';
 import { traceContourViaOffload } from './offload-client';
 
 const MAX_PROCESSING_DIMENSION = 4000;
+const MAX_PREVIEW_DIMENSION = 400;
 const WORKER_TIMEOUT_MS = 45_000;
 
 // Tighter cap for the main-thread fallback. The silhouette-mask /
@@ -14,10 +15,13 @@ const WORKER_TIMEOUT_MS = 45_000;
 // the silhouette accurately.
 const MAX_FALLBACK_DIMENSION = 1500;
 
-function downsampleImage(image: HTMLImageElement): { canvas: HTMLCanvasElement; scale: number } {
+function downsampleImage(
+  image: HTMLImageElement,
+  maxProcessingDimension = MAX_PROCESSING_DIMENSION,
+): { canvas: HTMLCanvasElement; scale: number } {
   const maxDim = Math.max(image.width, image.height);
   
-  if (maxDim <= MAX_PROCESSING_DIMENSION) {
+  if (maxDim <= maxProcessingDimension) {
     const canvas = document.createElement('canvas');
     canvas.width = image.width;
     canvas.height = image.height;
@@ -26,7 +30,7 @@ function downsampleImage(image: HTMLImageElement): { canvas: HTMLCanvasElement; 
     return { canvas, scale: 1 };
   }
   
-  const scale = MAX_PROCESSING_DIMENSION / maxDim;
+  const scale = maxProcessingDimension / maxDim;
   const newWidth = Math.round(image.width * scale);
   const newHeight = Math.round(image.height * scale);
   
@@ -146,14 +150,17 @@ interface ProcessRequest {
   previewMode?: boolean;
   detectedShapeType?: DetectedShapeType;
   detectedShapeInfo?: DetectedShapeInfo | null;
+  generation: number;
 }
 
 type ProgressCallback = (progress: number) => void;
 
 class ContourWorkerManager {
+  private readonly displayOnly: boolean;
   private worker: Worker | null = null;
   private isProcessing = false;
   private workerTimeout: ReturnType<typeof setTimeout> | null = null;
+  private generation = 0;
   private pendingRequest: {
     request: ProcessRequest;
     resolve: (result: WorkerResult) => void;
@@ -161,6 +168,7 @@ class ContourWorkerManager {
     onProgress?: ProgressCallback;
   } | null = null;
   private currentRequest: {
+    generation: number;
     resolve: (result: WorkerResult) => void;
     reject: (error: Error) => void;
     onProgress?: ProgressCallback;
@@ -176,7 +184,8 @@ class ContourWorkerManager {
   // browser) or set it to null (Cursor preview / similar).
   private workerHealthReady: Promise<void>;
 
-  constructor() {
+  constructor(displayOnly = false) {
+    this.displayOnly = displayOnly;
     this.workerHealthReady = this.initWorker();
   }
   
@@ -206,6 +215,10 @@ class ContourWorkerManager {
    * and be ignored.
    */
   cancelInFlight(reason: string = 'Cancelled by caller') {
+    // A process() call can be waiting for the worker-health probe without
+    // having installed currentRequest yet. Bump the generation first so it
+    // cannot resume and write a result after this cancellation.
+    this.generation++;
     const hadActiveRequest = Boolean(this.currentRequest || this.pendingRequest || this.isProcessing);
     this.clearWorkerTimeout();
     if (this.currentRequest) {
@@ -238,9 +251,21 @@ class ContourWorkerManager {
       return;
     }
     try {
-      this.worker = new ContourWorker();
-      this.worker.onmessage = this.handleMessage.bind(this);
-      this.worker.onerror = this.handleError.bind(this);
+      const worker = new ContourWorker();
+      // Keep the worker instance in the handler closure. A terminated worker
+      // can still have a queued message in some browsers; never let that
+      // message be consumed by a newer request on a replacement worker.
+      worker.onmessage = (event) => {
+        if (this.worker === worker) {
+          this.handleMessage(event);
+        }
+      };
+      worker.onerror = (error) => {
+        if (this.worker === worker) {
+          this.handleError(error);
+        }
+      };
+      this.worker = worker;
       console.log('[ContourWorker] worker thread active');
     } catch (error) {
       console.warn('[ContourWorker] construct threw — falling back to main thread:', error);
@@ -249,6 +274,7 @@ class ContourWorkerManager {
   }
 
   recreateWorker() {
+    this.generation++;
     this.clearWorkerTimeout();
     if (this.worker) {
       this.worker.terminate();
@@ -274,12 +300,23 @@ class ContourWorkerManager {
   private handleMessage(e: MessageEvent<WorkerResponse>) {
     const { type, imageData, imageCanvasX, imageCanvasY, error, progress, contourData, detectedAlgorithm } = e.data;
 
-    if (type === 'progress' && this.currentRequest?.onProgress && progress !== undefined) {
+    if (
+      type === 'progress' &&
+      this.currentRequest &&
+      this.currentRequest.generation === this.generation &&
+      this.currentRequest.onProgress &&
+      progress !== undefined
+    ) {
       this.currentRequest.onProgress(progress);
       return;
     }
 
     if (type === 'result' && imageData && this.currentRequest) {
+      if (this.currentRequest.generation !== this.generation) {
+        this.currentRequest.reject(new Error('Contour processing cancelled'));
+        this.finishProcessing();
+        return;
+      }
       if (contourData) {
         this.cachedContourData = contourData;
       }
@@ -339,6 +376,7 @@ class ContourWorkerManager {
     detectedShapeType?: DetectedShapeType,
     detectedShapeInfo?: DetectedShapeInfo | null
   ): Promise<{ canvas: HTMLCanvasElement; downsampleScale: number; imageCanvasX: number; imageCanvasY: number; contourData?: ContourData; detectedAlgorithm?: DetectedAlgorithm }> {
+    const generation = this.generation;
     const processKey = `${image.src}|${image.width}x${image.height}|${strokeSettings.width}|${strokeSettings.enabled}|${strokeSettings.alphaThreshold}|${strokeSettings.backgroundColor}|${strokeSettings.autoBridging}|${strokeSettings.autoBridgingThreshold}|${strokeSettings.contourMode}|${strokeSettings.cornerMode}|${resizeSettings.widthInches}|${resizeSettings.heightInches}|${detectedShapeType}|${(strokeSettings as any).includeHoles}`;
     if (this.lastProcessKey === processKey && this.lastProcessResult) {
       return this.lastProcessResult;
@@ -348,16 +386,36 @@ class ContourWorkerManager {
     // page load doesn't race-fall-back to the main thread before the
     // worker has even had a chance to be constructed.
     await this.workerHealthReady;
+    if (generation !== this.generation) {
+      throw new Error('Contour processing cancelled');
+    }
 
     if (!this.worker) {
-      const canvas = await this.processFallback(image, strokeSettings, resizeSettings, onProgress);
-      const fallbackResult = { canvas, downsampleScale: 1, imageCanvasX: 0, imageCanvasY: 0 };
+      const fallback = await this.processFallback(
+        image,
+        strokeSettings,
+        resizeSettings,
+        onProgress,
+        this.displayOnly ? MAX_PREVIEW_DIMENSION : MAX_FALLBACK_DIMENSION,
+      );
+      if (generation !== this.generation) {
+        throw new Error('Contour processing cancelled');
+      }
+      const fallbackResult = {
+        canvas: fallback.canvas,
+        downsampleScale: fallback.scale,
+        imageCanvasX: 0,
+        imageCanvasY: 0,
+      };
       this.lastProcessKey = processKey;
       this.lastProcessResult = fallbackResult;
       return fallbackResult;
     }
 
-    const { canvas, scale } = downsampleImage(image);
+    const { canvas, scale } = downsampleImage(
+      image,
+      this.displayOnly ? MAX_PREVIEW_DIMENSION : MAX_PROCESSING_DIMENSION,
+    );
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Could not get canvas context');
 
@@ -384,10 +442,14 @@ class ContourWorkerManager {
       resizeSettings: { ...resizeSettings, outputDPI: effectiveDPI },
       previewMode: true,
       detectedShapeType,
-      detectedShapeInfo: scaledShapeInfo
+      detectedShapeInfo: scaledShapeInfo,
+      generation,
     };
 
     const result = await this.processWithOffloadFallback(request, onProgress);
+    if (generation !== this.generation) {
+      throw new Error('Contour processing cancelled');
+    }
 
     const resultCanvas = document.createElement('canvas');
     resultCanvas.width = result.imageData.width;
@@ -412,6 +474,13 @@ class ContourWorkerManager {
 
   // VPS tier, above the existing worker/main-thread ladder — falls straight through to the worker on any offload failure, so a flaky/unconfigured VPS never blocks tracing.
   private async processWithOffloadFallback(request: ProcessRequest, onProgress?: ProgressCallback): Promise<WorkerResult> {
+    if (this.displayOnly) {
+      // Preview work is deliberately local. The preview is already capped to
+      // the worker's 400px limit above, so a VPS health probe plus PNG
+      // encode/upload roundtrip only adds latency and can race cancellation.
+      return this.processInWorker(request, onProgress);
+    }
+
     let reportedProgress = 0;
     const reportProgress = (progress: number) => {
       reportedProgress = Math.max(reportedProgress, progress);
@@ -419,9 +488,15 @@ class ContourWorkerManager {
     };
     reportProgress(2);
     if (await offloadHealthy()) {
+      if (request.generation !== this.generation) {
+        throw new Error('Contour processing cancelled');
+      }
       try {
         reportProgress(8);
         const result = await traceContourViaOffload(request, reportProgress);
+        if (request.generation !== this.generation) {
+          throw new Error('Contour processing cancelled');
+        }
         reportProgress(100);
         // Mirror handleWorkerMessage's cache write (line ~267) — getCachedContourData() is read
         // later by the download/gang-sheet paths, independently of this call's own return value.
@@ -432,6 +507,9 @@ class ContourWorkerManager {
         }
         return result;
       } catch (err) {
+        if (request.generation !== this.generation) {
+          throw err;
+        }
         console.warn('[ContourWorkerManager] offload failed, falling back to worker:', err);
         pauseOffloadAfterFailure();
         reportProgress(10);
@@ -443,6 +521,11 @@ class ContourWorkerManager {
 
   private processInWorker(request: ProcessRequest, onProgress?: ProgressCallback): Promise<WorkerResult> {
     return new Promise((resolve, reject) => {
+      if (request.generation !== this.generation) {
+        reject(new Error('Contour processing cancelled'));
+        return;
+      }
+
       if (this.isProcessing) {
         if (this.pendingRequest) {
           this.pendingRequest.reject(new Error('Superseded by a newer contour request'));
@@ -453,7 +536,7 @@ class ContourWorkerManager {
       }
 
       this.isProcessing = true;
-      this.currentRequest = { resolve, reject, onProgress };
+      this.currentRequest = { generation: request.generation, resolve, reject, onProgress };
       onProgress?.(5);
 
       this.worker!.postMessage({
@@ -467,7 +550,7 @@ class ContourWorkerManager {
       }, [request.imageData.data.buffer]);
 
       this.workerTimeout = setTimeout(() => {
-        if (!this.currentRequest) return;
+        if (!this.currentRequest || this.currentRequest.generation !== this.generation) return;
         const timeoutError = new Error('Contour worker timed out and was reset');
         this.currentRequest.reject(timeoutError);
         this.pendingRequest?.reject(timeoutError);
@@ -497,15 +580,17 @@ class ContourWorkerManager {
     },
     resizeSettings: ResizeSettings,
     onProgress?: ProgressCallback,
-  ): Promise<HTMLCanvasElement> {
+    maxDimension = MAX_FALLBACK_DIMENSION,
+  ): Promise<{ canvas: HTMLCanvasElement; scale: number }> {
     let processImage = image;
     const maxDim = Math.max(image.width, image.height);
+    let scale = 1;
 
     // Main-thread fallback ⇒ much tighter cap than the worker path. The
     // silhouette pipeline is O(W*H) and synchronous; without this, a
     // 3000–4000 px design freezes the UI for minutes.
-    if (maxDim > MAX_FALLBACK_DIMENSION) {
-      const scale = MAX_FALLBACK_DIMENSION / maxDim;
+    if (maxDim > maxDimension) {
+      scale = maxDimension / maxDim;
       const newWidth = Math.round(image.width * scale);
       const newHeight = Math.round(image.height * scale);
 
@@ -540,10 +625,11 @@ class ContourWorkerManager {
     const result = createSilhouetteContour(processImage, fullStrokeSettings, resizeSettings);
     console.log(`[ContourFallback] createSilhouetteContour finished in ${(performance.now() - t0).toFixed(0)} ms (input ${processImage.width}x${processImage.height})`);
     onProgress?.(1);
-    return result;
+    return { canvas: result, scale };
   }
 
   terminate() {
+    this.generation++;
     this.clearWorkerTimeout();
     this.currentRequest?.reject(new Error('Contour worker terminated'));
     this.pendingRequest?.reject(new Error('Contour worker terminated'));
@@ -558,12 +644,20 @@ class ContourWorkerManager {
 }
 
 let managerInstance: ContourWorkerManager | null = null;
+let previewManagerInstance: ContourWorkerManager | null = null;
 
 export function getContourWorkerManager(): ContourWorkerManager {
   if (!managerInstance) {
     managerInstance = new ContourWorkerManager();
   }
   return managerInstance;
+}
+
+export function getPreviewContourWorkerManager(): ContourWorkerManager {
+  if (!previewManagerInstance) {
+    previewManagerInstance = new ContourWorkerManager(true);
+  }
+  return previewManagerInstance;
 }
 
 export async function processContourInWorker(
@@ -589,10 +683,36 @@ export async function processContourInWorker(
   return manager.process(image, strokeSettings, resizeSettings, onProgress, detectedShapeType, detectedShapeInfo);
 }
 
+export async function processPreviewContourInWorker(
+  image: HTMLImageElement,
+  strokeSettings: {
+    width: number;
+    color: string;
+    enabled: boolean;
+    alphaThreshold: number;
+    backgroundColor: string;
+    useCustomBackground: boolean;
+    autoBridging: boolean;
+    autoBridgingThreshold: number;
+    contourMode?: ContourMode;
+    cornerMode?: string;
+  },
+  resizeSettings: ResizeSettings,
+  onProgress?: ProgressCallback,
+  detectedShapeType?: DetectedShapeType,
+  detectedShapeInfo?: DetectedShapeInfo | null
+): Promise<{ canvas: HTMLCanvasElement; downsampleScale: number; imageCanvasX: number; imageCanvasY: number; contourData?: ContourData; detectedAlgorithm?: DetectedAlgorithm }> {
+  const manager = getPreviewContourWorkerManager();
+  return manager.process(image, strokeSettings, resizeSettings, onProgress, detectedShapeType, detectedShapeInfo);
+}
+
 if (import.meta.hot) {
   import.meta.hot.accept('./contour-worker', () => {
     if (managerInstance) {
       managerInstance.recreateWorker();
+    }
+    if (previewManagerInstance) {
+      previewManagerInstance.recreateWorker();
     }
   });
 }
