@@ -13,6 +13,7 @@ import { generateShapePDFBase64, calculateShapeDimensions } from "./lib/shape-ou
 import { getContourWorkerManager, type DetectedAlgorithm } from "./lib/contour-worker-manager";
 import { extractColorsFromImageAsync, detectColorRegionsAsync, ExtractedColor, type ColorExtractionResult } from "./lib/color-extractor";
 import { mergeDetectedColorRegions } from "./lib/spot-selection-state";
+import AutoSpotLayersPanel from "./auto-spot-layers-panel";
 import { Download, ChevronDown, ChevronUp, Eye, EyeOff, X, Layers, Palette, Pipette, Trash2, Link, Unlink, Settings2, Spline, Shapes } from "lucide-react";
 import SizeInput from "@/components/image-editor/size-input";
 
@@ -132,6 +133,8 @@ export default function ControlsSection({
   const [transparentFillNotice, setTransparentFillNotice] = useState<'contour' | 'shape' | null>(null);
   const [acknowledgedTransparentPreview, setAcknowledgedTransparentPreview] = useState(false);
   const colorListRef = useRef<HTMLDivElement>(null);
+  const extractedColorsRef = useRef(extractedColors);
+  extractedColorsRef.current = extractedColors;
 
   const canDownload = !!imageInfo;
   const extractionRef = useRef<ColorExtractionResult | null>(null);
@@ -220,6 +223,8 @@ export default function ControlsSection({
 
   const spotSourceImage = imageInfo?.image;
   const spotSourceUrl = spotSourceImage?.src;
+  const spotSourceRef = useRef(spotSourceImage);
+  spotSourceRef.current = spotSourceImage;
 
   useEffect(() => {
     if (!enableSpotColors) {
@@ -1140,6 +1145,28 @@ export default function ControlsSection({
         </div>}
 
         {/* Spot Colors Button & Panel - hidden on the gangsheet builder for now */}
+        {imageInfo && enableSpotColors && (
+          <AutoSpotLayersPanel
+            image={spotSourceImage}
+            colors={extractedColors}
+            pixelMap={extractionRef.current?.pixelMap}
+            mapWidth={extractionRef.current?.width}
+            mapHeight={extractionRef.current?.height}
+            onApply={(nextColors, source) => {
+              const currentExtraction = extractionRef.current;
+              const accepted = extractedColorsRef.current === source.colors
+                && spotSourceRef.current === source.image
+                && currentExtraction?.pixelMap === source.pixelMap
+                && currentExtraction?.width === source.mapWidth
+                && currentExtraction?.height === source.mapHeight;
+              if (!accepted) return false;
+              setExtractedColors(current => current === source.colors ? nextColors : current);
+              setSpotPreviewEnabled(true);
+              return true;
+            }}
+            onApplied={() => setShowSpotColors(true)}
+          />
+        )}
         {imageInfo && enableSpotColors && (
           <div className="border-b border-white/10">
             <button

@@ -147,7 +147,7 @@ function buildRegionInclusionMasks(
   return { whiteMask, glossMask };
 }
 
-function traceColorRegionsAsync(
+function traceColorRegionsAsyncSingle(
   image: HTMLImageElement,
   spotColors: SpotColorInput[],
   widthInches: number,
@@ -389,6 +389,111 @@ function traceColorRegionsAsync(
       resolve([]);
     }
   });
+}
+
+/**
+ * Exact-selection images contain the extracted RGB value for every selected
+ * pixel.  A color that has both a white-only and a gloss-only region therefore
+ * cannot be traced in one request: the RGB value does not carry the channel
+ * membership and the worker quite correctly sees the same color in both
+ * separations.
+ *
+ * Keep the worker/offload protocol unchanged by making two ordinary trace
+ * requests with channel-isolated snapshots.  Fluorescent channels stay on the
+ * white pass so they are traced once, rather than being duplicated or lost.
+ */
+function hasMixedRegionChannels(spotColors: SpotColorInput[]): boolean {
+  return spotColors.some(color => {
+    const regions = color.regions;
+    if (!regions || regions.length === 0) return false;
+
+    const whiteIds = new Set(regions.filter(region => !!region.spotWhite).map(region => region.id));
+    const glossIds = new Set(regions.filter(region => !!region.spotGloss).map(region => region.id));
+    if (whiteIds.size === 0 || glossIds.size === 0 || whiteIds.size !== glossIds.size) {
+      return whiteIds.size > 0 && glossIds.size > 0;
+    }
+    for (const id of whiteIds) {
+      if (!glossIds.has(id)) return true;
+    }
+    return false;
+  });
+}
+
+function hasUsableSpotPixelMap(
+  image: HTMLImageElement,
+  spotPixelMap?: SpotPixelMapData,
+): boolean {
+  if (!spotPixelMap || spotPixelMap.pixelMap.length === 0) return false;
+  if (spotPixelMap.mapWidth <= 0 || spotPixelMap.mapHeight <= 0) return false;
+
+  // Match the staleness guard in traceColorRegionsAsyncSingle so a stale map
+  // does not cause two redundant color-matching traces.
+  const imageWidth = image.naturalWidth || image.width;
+  const imageHeight = image.naturalHeight || image.height;
+  if (imageWidth > 0 && imageHeight > 0) {
+    const mapAR = spotPixelMap.mapWidth / spotPixelMap.mapHeight;
+    const imageAR = imageWidth / imageHeight;
+    if (Math.abs(mapAR - imageAR) / imageAR > 0.02) return false;
+  }
+  return true;
+}
+
+function channelIsolatedSpotColors(
+  spotColors: SpotColorInput[],
+  channel: 'white' | 'gloss',
+  preserveFluorescent: boolean,
+): SpotColorInput[] {
+  return spotColors.map(color => {
+    const regions = color.regions?.map(region => ({
+      ...region,
+      spotWhite: channel === 'white' ? !!region.spotWhite : false,
+      spotGloss: channel === 'gloss' ? !!region.spotGloss : false,
+    }));
+    const regionWhite = regions?.some(region => region.spotWhite) ?? false;
+    const regionGloss = regions?.some(region => region.spotGloss) ?? false;
+    return {
+      ...color,
+      spotWhite: channel === 'white' ? (!!color.spotWhite || regionWhite) : false,
+      spotGloss: channel === 'gloss' ? (!!color.spotGloss || regionGloss) : false,
+      regions,
+      ...(preserveFluorescent ? {} : {
+        spotFluorY: false,
+        spotFluorM: false,
+        spotFluorG: false,
+        spotFluorOrange: false,
+      }),
+    };
+  });
+}
+
+async function traceColorRegionsAsync(
+  image: HTMLImageElement,
+  spotColors: SpotColorInput[],
+  widthInches: number,
+  heightInches: number,
+  spotPixelMap?: SpotPixelMapData
+): Promise<SpotColorRegion[]> {
+  if (!hasMixedRegionChannels(spotColors) || !hasUsableSpotPixelMap(image, spotPixelMap)) {
+    return traceColorRegionsAsyncSingle(image, spotColors, widthInches, heightInches, spotPixelMap);
+  }
+
+  const whiteColors = channelIsolatedSpotColors(spotColors, 'white', true);
+  const glossColors = channelIsolatedSpotColors(spotColors, 'gloss', false);
+  const whiteRegions = await traceColorRegionsAsyncSingle(
+    image,
+    whiteColors,
+    widthInches,
+    heightInches,
+    spotPixelMap,
+  );
+  const glossRegions = await traceColorRegionsAsyncSingle(
+    image,
+    glossColors,
+    widthInches,
+    heightInches,
+    spotPixelMap,
+  );
+  return [...whiteRegions, ...glossRegions];
 }
 
 function spotColorPathsToPDFOps(
