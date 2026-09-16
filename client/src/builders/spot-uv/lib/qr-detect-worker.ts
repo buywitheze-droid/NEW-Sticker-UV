@@ -5,7 +5,7 @@
 // preprocessing. We have a single static image, so we trade real-time
 // constraints for thoroughness — running several engines × several
 // preprocessing variants × several spatial tiles, then deduping results
-// by payload.
+// spatially.
 //
 // Engines (in priority order):
 //   1. BarcodeDetector  — native browser API, backed by the OS detector
@@ -28,9 +28,8 @@
 //   - rotated 90/180/270   — for QRs not upright (jsQR, others auto-rotate)
 //   - tiled (4 quadrants)  — finds small QRs in large designs
 //
-// All findings are deduped by payload first (identical payloads collapse
-// into one result), and ties broken by spatial overlap. The result is
-// returned in image-pixel coords (caller's source image).
+// Findings are deduped by overlapping geometry. Two identical payloads at
+// two different positions are both retained.
 
 import jsQR from 'jsqr';
 // ZBar wasm is intentionally excluded: in a Vite worker build the WASM binary
@@ -38,21 +37,19 @@ import jsQR from 'jsqr';
 // causing every call to throw and all variants to silently return [].
 // jsQR + native BarcodeDetector cover the same ground reliably without wasm.
 
-// Relay worker-internal logs to the main thread so they appear in the
-// browser console without needing to switch DevTools to the worker context.
-function workerLog(message: string) {
-  (self as unknown as Worker).postMessage({ type: 'log', message });
-}
-function workerWarn(message: string) {
-  (self as unknown as Worker).postMessage({ type: 'warn', message });
-}
-
 interface DetectRequest {
   imageData: Uint8ClampedArray;
   width: number;
   height: number;
+  /** Original source dimensions; raster dimensions may be capped by caller. */
+  sourceWidth?: number;
+  sourceHeight?: number;
   /** Hard cap on how many QRs we attempt to detect. Default 4. */
   maxCodes?: number;
+  /** Enables the longer local recovery pass. */
+  deep?: boolean;
+  /** Absolute deadline supplied by the owning invocation. */
+  deadlineAt?: number;
 }
 
 interface DetectedQRPayload {
@@ -67,7 +64,7 @@ interface DetectedQRPayload {
   };
   rotation: number;
   estimatedModuleSize: number;
-  /** Which engine + variant detected this QR (debug aid, surfaces in logs). */
+  /** Which engine + variant detected this QR (internal tie-break only). */
   source?: string;
 }
 
@@ -356,7 +353,9 @@ async function detectWithNative(
           ];
       const corners = approximateCornersFromPoints(pts);
       out.push({
-        payload: r.rawValue,
+        // Native implementations can expose geometry before decoding a
+        // payload. Keep it as a manual recovery candidate.
+        payload: typeof r.rawValue === 'string' ? r.rawValue : '',
         bbox: bboxFromCorners(corners),
         corners,
         rotation: rotationFromCorners(corners),
@@ -366,7 +365,6 @@ async function detectWithNative(
     }
     return out;
   } catch (err) {
-    workerWarn(`BarcodeDetector engine failed: ${err}`);
     return [];
   }
 }
@@ -422,58 +420,64 @@ async function runEngines(
 // ─── Dedup ───────────────────────────────────────────────────────────────
 
 function dedupe(findings: DetectedQRPayload[]): DetectedQRPayload[] {
-  // Group by payload (the exclusion principle for "is this the same QR").
-  // Within each payload, prefer the finding with the largest bbox area
-  // (usually the most accurate localisation), and merge any spatial
-  // overlaps.
-  const byPayload = new Map<string, DetectedQRPayload[]>();
-  for (const f of findings) {
-    const arr = byPayload.get(f.payload) ?? [];
-    arr.push(f);
-    byPayload.set(f.payload, arr);
+  // Cluster spatially, not by payload: a decoder can return a slightly
+  // different payload for the same physical QR, while two identical QRs at
+  // different positions must remain separate results.
+  const clusters: DetectedQRPayload[][] = [];
+  for (const finding of findings) {
+    const cluster = clusters.find((items) =>
+      items.some((item) => bboxIoU(item.bbox, finding.bbox) > 0.3));
+    if (cluster) cluster.push(finding);
+    else clusters.push([finding]);
   }
-  const out: DetectedQRPayload[] = [];
-  byPayload.forEach((group) => {
-    // Cluster within payload by bbox IoU — handles the (rare) case of two
-    // identical QRs in the same image at different locations.
-    const clusters: DetectedQRPayload[][] = [];
-    for (const f of group) {
-      let placed = false;
-      for (const cluster of clusters) {
-        if (cluster.some((c) => bboxIoU(c.bbox, f.bbox) > 0.3)) {
-          cluster.push(f);
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) clusters.push([f]);
-    }
-    for (const cluster of clusters) {
-      // Pick the largest-bbox representative — that engine likely had the
-      // best fix on the corners.
-      cluster.sort((a, b) => b.bbox.width * b.bbox.height - a.bbox.width * a.bbox.height);
-      out.push(cluster[0]);
-    }
+  return clusters.map((cluster) => {
+    // Prefer a decoded payload over a geometry-only candidate, then prefer
+    // the largest localization (usually the most accurate engine result).
+    cluster.sort((a, b) => {
+      const payloadQuality = Number(b.payload.length > 0) - Number(a.payload.length > 0);
+      if (payloadQuality !== 0) return payloadQuality;
+      return b.bbox.width * b.bbox.height - a.bbox.width * a.bbox.height;
+    });
+    return cluster[0];
   });
-  return out;
 }
 
 // ─── Main pipeline ───────────────────────────────────────────────────────
 
-// Pixel budget for downscaling huge images before running detection. ZBar
-// and jsQR both struggle and use proportional memory on multi-megapixel
-// images. 1.5MP is plenty for QR localisation (a real QR needs ~5-7px per
-// module to decode reliably; even at 1.5MP we have headroom for QRs as
-// small as ~100px on a 4-inch sticker design). Source-coord findings get
-// scaled back up by the caller.
-const DETECT_PIXEL_BUDGET = 1_500_000;
+function validGeometry(f: DetectedQRPayload, width: number, height: number): boolean {
+  const points = [
+    f.corners.topLeft,
+    f.corners.topRight,
+    f.corners.bottomLeft,
+    f.corners.bottomRight,
+  ];
+  if (!points.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))) return false;
+  if (!points.every((p) => p && p.x >= 0 && p.y >= 0 && p.x <= width && p.y <= height)) return false;
+  if (!Number.isFinite(f.bbox.x) || !Number.isFinite(f.bbox.y) ||
+      !Number.isFinite(f.bbox.width) || !Number.isFinite(f.bbox.height) ||
+      f.bbox.x < 0 || f.bbox.y < 0 ||
+      f.bbox.x + f.bbox.width > width || f.bbox.y + f.bbox.height > height ||
+      f.bbox.width < 8 || f.bbox.height < 8) return false;
+  return Number.isFinite(f.estimatedModuleSize) && f.estimatedModuleSize > 0;
+}
 
-function maybeDownscale(src: Uint8ClampedArray, width: number, height: number): { rgba: Uint8ClampedArray; w: number; h: number; scale: number } {
+function maybeDownscale(
+  src: Uint8ClampedArray,
+  width: number,
+  height: number,
+  deep: boolean,
+): { rgba: Uint8ClampedArray; w: number; h: number; scale: number } {
+  const pixelBudget = deep ? 4_000_000 : 2_000_000;
   const total = width * height;
-  if (total <= DETECT_PIXEL_BUDGET) return { rgba: src, w: width, h: height, scale: 1 };
-  const scale = Math.sqrt(DETECT_PIXEL_BUDGET / total);
-  const newW = Math.max(1, Math.round(width * scale));
-  const newH = Math.max(1, Math.round(height * scale));
+  const scale = Math.min(1, 2400 / Math.max(width, height), Math.sqrt(pixelBudget / total));
+  if (scale >= 1) return { rgba: src, w: width, h: height, scale: 1 };
+  let newW = Math.max(1, Math.round(width * scale));
+  let newH = Math.max(1, Math.round(height * scale));
+  while (newW * newH > pixelBudget || Math.max(newW, newH) > 2400) {
+    if (newW >= newH && newW > 1) newW--;
+    else if (newH > 1) newH--;
+    else break;
+  }
   // Bilinear downscale — fine for QR localisation, much faster than offscreen
   // canvas calls inside a worker.
   const out = new Uint8ClampedArray(newW * newH * 4);
@@ -491,16 +495,56 @@ function maybeDownscale(src: Uint8ClampedArray, width: number, height: number): 
   return { rgba: out, w: newW, h: newH, scale };
 }
 
+function spatialCount(findings: DetectedQRPayload[]): number {
+  return dedupe(findings).length;
+}
+
+function ensureWithinDeadline(deadlineAt?: number): void {
+  if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+    const error = new Error('QR detection deadline exceeded');
+    error.name = 'QRDetectionTimeout';
+    throw error;
+  }
+}
+
+function workerProgress(
+  message: 'Scanning original raster' | 'Trying enhanced local variants' | 'Scanning image regions' | 'Finishing QR scan',
+): void {
+  (self as unknown as Worker).postMessage({ type: 'progress', message });
+}
+
 self.onmessage = async (e: MessageEvent) => {
-  const { imageData, width: srcW, height: srcH, maxCodes = 4 } = e.data as DetectRequest;
-  const start = Date.now();
+  const {
+    imageData,
+    width: rasterW,
+    height: rasterH,
+    sourceWidth = rasterW,
+    sourceHeight = rasterH,
+    maxCodes: requestedMaxCodes = 4,
+    deep = false,
+    deadlineAt,
+  } = e.data as DetectRequest;
+  const maxCodes = Number.isFinite(requestedMaxCodes)
+    ? Math.max(0, Math.floor(requestedMaxCodes))
+    : 4;
 
   try {
+    ensureWithinDeadline(deadlineAt);
+    if (maxCodes === 0) {
+      (self as unknown as Worker).postMessage({
+        type: 'result',
+        coordinateSpace: 'source',
+        qrCodes: [],
+      });
+      return;
+    }
     // Downscale huge images before detection. We map detected coords back
     // to source-image space at the very end so callers always see
     // source-pixel bboxes.
-    const { rgba: workRgba, w: width, h: height, scale: workScale } = maybeDownscale(imageData, srcW, srcH);
-    const upscale = 1 / workScale;
+    const { rgba: workRgba, w: width, h: height } = maybeDownscale(imageData, rasterW, rasterH, deep);
+    const sourceScaleX = sourceWidth / width;
+    const sourceScaleY = sourceHeight / height;
+    workerProgress('Scanning original raster');
 
     // Compute luma + Otsu once — these feed many variants, no point
     // recomputing.
@@ -590,24 +634,29 @@ self.onmessage = async (e: MessageEvent) => {
       });
     }
 
+    // Normal scans stay predictable; deep scans add enhanced local variants
+    // and the regional pass.
+    const scanFactories = deep
+      ? variantFactories
+      : [...variantFactories.slice(0, 4), ...variantFactories.slice(-3)];
     const allFindings: DetectedQRPayload[] = [];
-    for (const factory of variantFactories) {
+    for (const [index, factory] of scanFactories.entries()) {
+      ensureWithinDeadline(deadlineAt);
       const v = factory();
       const ctx: DetectionContext = { width: v.w, height: v.h, rotations: v.rotations, baseOriginX: v.baseOriginX, baseOriginY: v.baseOriginY };
       const found = await runEngines(v.rgba, ctx, v.name, width, height);
       allFindings.push(...found);
-      const distinct = new Set(allFindings.map((f) => f.payload)).size;
-      // Aggressive early-exit: once we've found `maxCodes` distinct
-      // payloads, we're done — every additional variant just adds dedup
-      // work for no new info. Most simple designs hit this on variant 1.
+      const distinct = spatialCount(allFindings);
+      if (deep && index === 4) workerProgress('Trying enhanced local variants');
       if (distinct >= maxCodes) break;
     }
 
     // Tile-based scan — only run if we haven't found enough yet *and*
     // the source is large enough that small QRs tucked into corners are
     // plausible after the work-canvas downscale.
-    const distinctSoFar = new Set(allFindings.map((f) => f.payload)).size;
-    if (distinctSoFar < maxCodes && Math.max(width, height) >= 800) {
+    const distinctSoFar = spatialCount(allFindings);
+    if (deep && distinctSoFar < maxCodes && Math.max(width, height) >= 800) {
+      workerProgress('Scanning image regions');
       const tw = Math.floor(width / 2);
       const th = Math.floor(height / 2);
       const overlap = Math.floor(Math.min(tw, th) * 0.25);
@@ -631,18 +680,19 @@ self.onmessage = async (e: MessageEvent) => {
           { name: `tile-raw[${tile.x},${tile.y}]`, rgba: tileBuf },
           { name: `tile-otsu[${tile.x},${tile.y}]`, rgba: tileOtsuRgba },
         ]) {
+          ensureWithinDeadline(deadlineAt);
           const ctx: DetectionContext = { width: tile.w, height: tile.h, rotations: 0, baseOriginX: tile.x, baseOriginY: tile.y };
           const found = await runEngines(tv.rgba, ctx, tv.name, tile.w, tile.h);
           allFindings.push(...found);
-          if (new Set(allFindings.map((f) => f.payload)).size >= maxCodes) break;
+          if (spatialCount(allFindings) >= maxCodes) break;
         }
-        if (new Set(allFindings.map((f) => f.payload)).size >= maxCodes) break;
+        if (spatialCount(allFindings) >= maxCodes) break;
       }
     }
 
     // Map work-coords back to source-image coords.
-    const sourceCoordFindings = upscale === 1 ? allFindings : allFindings.map((f) => {
-      const map = (p: { x: number; y: number }) => ({ x: p.x * upscale, y: p.y * upscale });
+    const sourceCoordFindings = allFindings.map((f) => {
+      const map = (p: { x: number; y: number }) => ({ x: p.x * sourceScaleX, y: p.y * sourceScaleY });
       const corners = {
         topLeft: map(f.corners.topLeft),
         topRight: map(f.corners.topRight),
@@ -658,27 +708,25 @@ self.onmessage = async (e: MessageEvent) => {
       };
     });
 
-    const deduped = dedupe(sourceCoordFindings);
+    const deduped = dedupe(sourceCoordFindings.map((f) => ({
+      ...f,
+      payload: typeof f.payload === 'string' ? f.payload : '',
+    })).filter((f) => validGeometry(f, sourceWidth, sourceHeight)));
     const final = deduped.filter((f) =>
       f.bbox.width >= 8 && f.bbox.height >= 8 &&
-      f.bbox.width <= srcW * 1.05 && f.bbox.height <= srcH * 1.05);
+      f.bbox.width <= sourceWidth && f.bbox.height <= sourceHeight);
 
-    if (final.length > 0) {
-      const sources = final.map((f) => `"${f.payload.slice(0, 30)}${f.payload.length > 30 ? '…' : ''}" via ${f.source}`).join(' | ');
-      workerLog(`${final.length} unique QR(s) in ${Date.now() - start}ms (workScale=${workScale.toFixed(2)}) — ${sources}`);
-    } else {
-      workerLog(`No QRs found in ${Date.now() - start}ms (workScale=${workScale.toFixed(2)}) — all engines × all variants tried`);
-    }
-
+    workerProgress('Finishing QR scan');
     (self as unknown as Worker).postMessage({
       type: 'result',
+      coordinateSpace: 'source',
       qrCodes: final.slice(0, maxCodes),
-      elapsedMs: Date.now() - start,
     });
   } catch (err: unknown) {
     (self as unknown as Worker).postMessage({
       type: 'error',
       error: err instanceof Error ? err.message : String(err),
+      code: err instanceof Error && err.name === 'QRDetectionTimeout' ? 'timeout' : 'worker',
     });
   }
 };

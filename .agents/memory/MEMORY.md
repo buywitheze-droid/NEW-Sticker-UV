@@ -6,3 +6,4 @@
 - [Contour component peers](contour-component-selection.md) — components ≥50% of main area are design peers, exempt from orphan area budget; check [ZH:Component] logs when outline drops part of a design.
 - [Authentication account linking](auth-account-linking.md) — trusted third-party sign-ins reuse the stable internal account only after the provider verifies its normalized email.
 - [Contour sizing constraint](contour-sizing-constraint.md) — closing print-filled gaps must not spend the customer's reserved size margin.
+- [QR repair integrity](qr-repair-integrity.md) — repairs preserve exact content and edit print pixels; scan timeouts are not proof that no code exists.

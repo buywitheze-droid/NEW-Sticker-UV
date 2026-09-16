@@ -16,6 +16,10 @@ import { DEFAULT_GANG_SHEET_SETTINGS, clampGangSheetQuantity, expandSettingsToFi
 import { useDebouncedValue } from "@/hooks/use-debounce";
 import { removeBackgroundFromCanvas } from "@/lib/background-removal";
 import { detectQRsInImage } from "./lib/qr";
+import QRRepairStudio from "./qr-repair-studio";
+import { applyQRRepairs, verifyQRRepairPixels } from "./lib/qr-repair";
+import { scaleQRRepairDrafts } from "./lib/qr-repair-geometry";
+import type { QRRepairDraft } from "./lib/qr-repair-types";
 import { parsePDF, type ParsedPDFData } from "./lib/pdf-parser";
 import type { ParsedSVGData } from "./lib/svg-parser";
 import { detectShape, mapDetectedShapeToType } from "./lib/shape-detection";
@@ -112,6 +116,14 @@ export default function ImageEditor({
   const [strokeMode, setStrokeMode] = useState<StrokeMode>('none');
   const [stickerSize, setStickerSize] = useState<StickerSize>(4); // Default 4 inch max dimension
   const [isProcessing, setIsProcessing] = useState(false);
+  const [qrStudioOpen, setQrStudioOpen] = useState(false);
+  const [qrScanStatus, setQrScanStatus] = useState<{
+    state: "idle" | "scanning" | "complete" | "cancelled" | "error";
+    message: string;
+  }>({ state: "idle", message: "Ready to scan." });
+  const qrSourceRef = useRef(imageInfo);
+  qrSourceRef.current = imageInfo;
+  const qrApplyingRef = useRef(false);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
   const [magicWandMode, setMagicWandMode] = useState(false);
   const [magicWandTolerance, setMagicWandTolerance] = useState(0.08); // 0..1
@@ -214,32 +226,36 @@ export default function ImageEditor({
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
 
-  const pushSnapshot = useCallback(() => {
+  const pushSnapshot = useCallback((imageOverride?: ImageInfo) => {
     if (isRestoringRef.current) return;
     const snap: EditorSnapshot = {
       strokeSettings: { ...strokeSettings },
       resizeSettings: { ...resizeSettings },
       shapeSettings: { ...shapeSettings },
       spotColors: { ...spotPreviewData, colors: spotPreviewData.colors.map(c => ({ ...c, regions: c.regions?.map(r => ({ ...r })) })) },
-      imageInfo: imageInfo ? { ...imageInfo } : null,
+      imageInfo: imageOverride ? { ...imageOverride } : imageInfo ? { ...imageInfo } : null,
     };
     const idx = historyIndexRef.current;
     const prev = idx >= 0 ? historyRef.current[idx] : null;
     if (prev) {
-      const sameSpot = prev.spotColors.colors.length === snap.spotColors.colors.length &&
-        prev.spotColors.colors.every((pc: any, ci: number) => {
-          const nc = snap.spotColors.colors[ci];
-          if (pc.spotWhite !== nc.spotWhite || pc.spotGloss !== nc.spotGloss) return false;
-          if (!pc.regions && !nc.regions) return true;
-          if (!pc.regions || !nc.regions || pc.regions.length !== nc.regions.length) return false;
-          return pc.regions.every((pr: any, ri: number) => {
-            const nr = nc.regions![ri];
-            return pr.spotWhite === nr.spotWhite && pr.spotGloss === nr.spotGloss;
-          });
-        });
-      const sameStroke = prev.strokeSettings.width === snap.strokeSettings.width &&
-        prev.strokeSettings.enabled === snap.strokeSettings.enabled;
-      if (sameSpot && sameStroke) {
+      // Pixel edits trigger color/region extraction. Unselected regions are
+      // derived metadata, not separate user actions that should consume Undo.
+      const spotIntent = (data: SpotPreviewData) => JSON.stringify({
+        whiteName: data.spotWhiteName,
+        glossName: data.spotGlossName,
+        colors: data.colors.flatMap(c => {
+          const flags = [c.spotWhite, c.spotGloss, c.spotFluorY, c.spotFluorM, c.spotFluorG, c.spotFluorOrange].map(Boolean);
+          const regions = c.regions?.filter(r => r.spotWhite || r.spotGloss)
+            .map(r => [r.id, !!r.spotWhite, !!r.spotGloss]) ?? [];
+          return flags.some(Boolean) || regions.length ? [{ hex: c.hex, flags, regions }] : [];
+        }),
+      });
+      const sameSpot = spotIntent(prev.spotColors) === spotIntent(snap.spotColors);
+      const sameStroke = JSON.stringify(prev.strokeSettings) === JSON.stringify(snap.strokeSettings);
+      const sameGeometry = JSON.stringify(prev.resizeSettings) === JSON.stringify(snap.resizeSettings) &&
+        JSON.stringify(prev.shapeSettings) === JSON.stringify(snap.shapeSettings);
+      const samePixels = prev.imageInfo?.image === snap.imageInfo?.image;
+      if (sameSpot && sameStroke && samePixels && sameGeometry) {
         return;
       }
     }
@@ -635,45 +651,53 @@ export default function ImageEditor({
   // Tracks the last image we ran QR detection on. Used by the
   // image-change effect to decide whether to re-detect.
   const lastQRDetectedImageRef = useRef<HTMLImageElement | null>(null);
+  const qrScanControllerRef = useRef<AbortController | null>(null);
+
+  const cancelQRScan = useCallback(() => {
+    qrScanControllerRef.current?.abort();
+    qrScanControllerRef.current = null;
+    setQrScanStatus({ state: "cancelled", message: "Scan cancelled. You can scan again or select a region manually." });
+  }, []);
 
   // Off-thread QR detection. Fires after imageInfo is set; merges results
   // back into state via a functional update that bails if the image has
   // since been replaced (avoids clobbering a newer upload's metadata).
-  const runQRDetection = useCallback((image: HTMLImageElement, options: { force?: boolean; toastOnEmpty?: boolean } = {}) => {
+  const runQRDetection = useCallback((image: HTMLImageElement, options: { force?: boolean; deep?: boolean } = {}) => {
     // Idempotency guard: skip if we've already detected on this exact image
     // reference. `force: true` bypasses (used by the toolbar "Re-scan" button
     // when the user wants to retry after the upload-time detection missed).
     if (!options.force && lastQRDetectedImageRef.current === image) return;
     lastQRDetectedImageRef.current = image;
-
-    detectQRsInImage(image).then((qrCodes) => {
+    qrScanControllerRef.current?.abort();
+    const controller = new AbortController();
+    qrScanControllerRef.current = controller;
+    const isCurrent = () => !controller.signal.aborted &&
+      qrScanControllerRef.current === controller && qrSourceRef.current?.image === image;
+    setQrScanStatus({ state: "scanning", message: options.deep ? "Deep scan in progress…" : "Scanning for QR codes…" });
+    detectQRsInImage(image, {
+      signal: controller.signal,
+      deep: options.deep,
+      maxCodes: 12,
+      onProgress: message => {
+        if (isCurrent()) setQrScanStatus({ state: "scanning", message });
+      },
+    }).then((qrCodes) => {
+      if (!isCurrent()) return;
       setImageInfo((current) => {
         if (!current || current.image !== image) return current;
         return { ...current, qrCodes, qrDetectionRan: true };
       });
-      if (qrCodes.length > 0) {
-        const payloads = qrCodes.map((q) => q.payload).join(', ');
-        console.log(`[QR] Detected ${qrCodes.length} QR code(s): ${payloads}`);
-        toast({
-          title: `${qrCodes.length} QR code${qrCodes.length === 1 ? '' : 's'} detected`,
-          description: `Will be re-rendered as crisp vectors in PDF exports. Payload${qrCodes.length === 1 ? '' : 's'}: ${payloads.length > 60 ? payloads.slice(0, 60) + '…' : payloads}`,
-        });
-      } else {
-        console.log('[QR] No QR codes detected in this design');
-        if (options.toastOnEmpty) {
-          toast({
-            title: 'No QR codes found',
-            description: 'Detection ran but found nothing scannable. If your design contains a QR (centre logos, stylised dots, low contrast can defeat detection), the export will still work — just without the crisp vector re-render.',
-            variant: 'destructive',
-          });
-        }
-      }
+      setQrScanStatus({
+        state: "complete",
+        message: qrCodes.length
+          ? `Found ${qrCodes.length} QR region${qrCodes.length === 1 ? "" : "s"}. Review before repairing.`
+          : "No readable QR found. Try a deep scan or select its region manually.",
+      });
     }).catch((err) => {
-      console.warn('[QR] Detection failed:', err);
-      // Detection is best-effort — failure is silent. Export still works,
-      // QRs just won't get the crisp re-render treatment.
+      if (!isCurrent()) return;
+      setQrScanStatus({ state: "error", message: err instanceof Error ? err.message : "QR scan failed. Try again or select a region manually." });
     });
-  }, [toast]);
+  }, []);
 
   // Re-run QR detection whenever the underlying image reference changes
   // (uploads, background removal, magic wand, AI enhance — anything that
@@ -682,7 +706,60 @@ export default function ImageEditor({
   useEffect(() => {
     if (!imageInfo?.image) return;
     runQRDetection(imageInfo.image);
+    return () => { qrScanControllerRef.current?.abort(); };
   }, [imageInfo?.image, runQRDetection]);
+
+  const handleApplyQRRepairs = useCallback(async (drafts: QRRepairDraft[]) => {
+    if (!imageInfo || qrApplyingRef.current) throw new Error("A QR repair is already running or the artwork is unavailable.");
+    if (!drafts.length) throw new Error("Select at least one verified QR repair.");
+    const source = imageInfo;
+    qrApplyingRef.current = true;
+    cancelQRScan();
+    pushSnapshot();
+    if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current);
+    try {
+      const sourceW = source.image.naturalWidth || source.image.width;
+      const sourceH = source.image.naturalHeight || source.image.height;
+      const next = await commitSpotUvEdit(
+        source,
+        resizeSettings.widthInches,
+        resizeSettings.heightInches,
+        async canvas => {
+          const scaled = scaleQRRepairDrafts(drafts, sourceW, sourceH, canvas.width, canvas.height);
+          // Check the actual print-size patch too, not just the enlarged modal preview.
+          const printScale = {
+            x: resizeSettings.widthInches * 300 / canvas.width,
+            y: resizeSettings.heightInches * 300 / canvas.height,
+          };
+          await applyQRRepairs(canvas, scaled, printScale);
+          return canvas;
+        },
+      );
+      if (!next) throw new Error("Could not update the print artwork.");
+      if (qrSourceRef.current?.image !== source.image) throw new Error("The artwork changed during repair. Reopen the studio and try again.");
+      const previewW = next.image.naturalWidth || next.image.width;
+      const previewH = next.image.naturalHeight || next.image.height;
+      const previewDrafts = scaleQRRepairDrafts(drafts, sourceW, sourceH, previewW, previewH);
+      // Preview-backed downloads/gang sheets can resample a second time.
+      // Verify those real committed pixels, not a freshly generated stand-in.
+      verifyQRRepairPixels(next.image, previewDrafts);
+      verifyQRRepairPixels(next.image, previewDrafts, {
+        x: resizeSettings.widthInches * 300 / previewW,
+        y: resizeSettings.heightInches * 300 / previewH,
+      });
+      // Repairs are now real print pixels. Never overwrite their chosen colors
+      // with the older black-and-white export-time QR overlay.
+      const repaired: ImageInfo = { ...next, qrCodes: undefined, qrDetectionRan: false, qrRerenderEnabled: false };
+      getContourWorkerManager().clearCache();
+      setCadCutBounds(null);
+      pushSnapshot(repaired);
+      setImageInfo(repaired);
+      setQrStudioOpen(false);
+      toast({ title: "QR repairs applied", description: `${drafts.length} verified repair${drafts.length === 1 ? "" : "s"} applied to the print artwork. Undo is available.` });
+    } finally {
+      qrApplyingRef.current = false;
+    }
+  }, [imageInfo, resizeSettings.widthInches, resizeSettings.heightInches, cancelQRScan, pushSnapshot, toast]);
 
   const applyNewImage = useCallback((newImageInfo: ImageInfo, widthInches: number, heightInches: number) => {
     // Drop any in-flight trace from the previous design before we swap.
@@ -2205,73 +2282,21 @@ export default function ImageEditor({
             )}
 
             {imageInfo && (
-              /*
-                QR badge — three states:
-                  1. Detection hasn't completed yet → subtle gray "Scanning…"
-                  2. Detection done, 0 codes found    → amber "0 QRs · Re-scan" (clickable, force-rescans)
-                  3. Detection done, 1+ codes found   → grey "N QRs · raw · click to fix"
-                     (default OFF). Click toggles to green "N QRs · crisp · click to undo".
-                Re-render is OPT-IN per user request: detection runs
-                automatically, but the QR is only replaced when the user
-                clicks the badge. Avoids quietly altering a clean QR.
-              */
-              imageInfo.qrDetectionRan ? (
-                imageInfo.qrCodes && imageInfo.qrCodes.length > 0 ? (
-                  <button
-                    type="button"
-                    onClick={() => setImageInfo((cur) => cur ? { ...cur, qrRerenderEnabled: !cur.qrRerenderEnabled } : cur)}
-                    title={
-                      imageInfo.qrRerenderEnabled
-                        ? `Crisp QR re-render is ON for ${imageInfo.qrCodes.length} QR code${imageInfo.qrCodes.length === 1 ? '' : 's'}.\nThe preview and PDF export will replace the source QR pixels with fresh, scanner-optimised vector modules at print resolution. Any centred logo is preserved by carving it out of the wipe.\nClick to undo (use the original QR pixels as-is).\n\nPayload${imageInfo.qrCodes.length === 1 ? '' : 's'}:\n${imageInfo.qrCodes.map((q) => '• ' + q.payload).join('\n')}`
-                        : `${imageInfo.qrCodes.length} QR code${imageInfo.qrCodes.length === 1 ? '' : 's'} detected — currently NOT being re-rendered (the source pixels will print as-is and may be blurry at small sizes).\nClick to enable crisp vector re-render: forces square modules + horizontal run-merge for clean ink prints, preserves any centred logo.\n\nPayload${imageInfo.qrCodes.length === 1 ? '' : 's'}:\n${imageInfo.qrCodes.map((q) => '• ' + q.payload).join('\n')}`
-                    }
-                    className={`group relative flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap text-white shadow-md overflow-hidden transition-all duration-200 active:scale-[0.95] active:shadow-sm ${
-                      imageInfo.qrRerenderEnabled
-                        ? 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 hover:shadow-lg hover:shadow-emerald-200 ring-2 ring-emerald-300'
-                        : 'bg-gradient-to-r from-indigo-500 to-violet-500 hover:from-indigo-600 hover:to-violet-600 hover:shadow-lg hover:shadow-indigo-200'
-                    }`}
-                  >
-                    <span className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out rounded-lg"></span>
-                    <svg className="relative w-4 h-4 transition-transform duration-200 group-hover:scale-110" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="3" y="3" width="7" height="7"/>
-                      <rect x="14" y="3" width="7" height="7"/>
-                      <rect x="3" y="14" width="7" height="7"/>
-                      <rect x="14" y="14" width="3" height="3"/>
-                      <rect x="18" y="18" width="3" height="3"/>
-                    </svg>
-                    <span className="relative">
-                      {imageInfo.qrCodes.length} QR{imageInfo.qrCodes.length === 1 ? '' : 's'}
-                      {imageInfo.qrRerenderEnabled ? ' · Crisp ✓' : ' · Fix QR'}
-                    </span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => imageInfo.image && runQRDetection(imageInfo.image, { force: true, toastOnEmpty: true })}
-                    title="No QR codes found in this design. Click to re-scan — useful if a centre logo, low contrast, or stylised dots defeated the first pass. Vector QR re-render in PDF exports kicks in only when at least one QR is detected."
-                    className="group relative flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap text-white shadow-md overflow-hidden transition-all duration-200 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 hover:shadow-lg hover:shadow-amber-200 active:scale-[0.95] active:shadow-sm"
-                  >
-                    <span className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out rounded-lg"></span>
-                    <svg className="relative w-4 h-4 transition-transform duration-200 group-hover:scale-110" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="3" y="3" width="7" height="7"/>
-                      <rect x="14" y="3" width="7" height="7"/>
-                      <rect x="3" y="14" width="7" height="7"/>
-                      <line x1="14" y1="14" x2="21" y2="21"/>
-                    </svg>
-                    <span className="relative">Re-scan QR</span>
-                  </button>
-                )
-              ) : (
-                <div
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap text-white/80 shadow-md bg-gradient-to-r from-slate-400 to-slate-500 opacity-70"
-                  title="Scanning the design for QR codes…"
-                >
-                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
-                  </svg>
-                  <span>Scanning QRs…</span>
-                </div>
-              )
+              <button
+                type="button"
+                onClick={() => setQrStudioOpen(true)}
+                title={qrScanStatus.message}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap text-white shadow-md bg-indigo-600 hover:bg-indigo-700"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+                  <rect x="3" y="14" width="7" height="7" /><path d="M14 14h3v3h4v4h-7z" />
+                </svg>
+                QR Repair Studio
+                {qrScanStatus.state === "scanning"
+                  ? <span className="text-indigo-200">Scanning…</span>
+                  : !!imageInfo.qrCodes?.length && <span className="text-indigo-200">({imageInfo.qrCodes.length})</span>}
+              </button>
             )}
 
             <div className="flex-1"></div>
@@ -2413,6 +2438,21 @@ export default function ImageEditor({
             <p className="text-xs text-slate-400">This may take up to a minute. Please wait.</p>
           </div>
         </div>
+      )}
+
+      {imageInfo && qrStudioOpen && (
+        <QRRepairStudio
+          open={qrStudioOpen}
+          onOpenChange={setQrStudioOpen}
+          image={imageInfo.image}
+          qrCodes={imageInfo.qrCodes ?? []}
+          onApply={handleApplyQRRepairs}
+          onScan={deep => runQRDetection(imageInfo.image, { force: true, deep })}
+          onCancelScan={cancelQRScan}
+          scanStatus={qrScanStatus}
+          printScale={resizeSettings.widthInches * 300 / (imageInfo.image.naturalWidth || imageInfo.image.width)}
+          printScaleY={resizeSettings.heightInches * 300 / (imageInfo.image.naturalHeight || imageInfo.image.height)}
+        />
       )}
 
       {/* Processing Modal */}

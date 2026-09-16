@@ -40,49 +40,21 @@ export interface DetectedQR {
 export interface DetectQRsOptions {
   /** Hard cap on QRs to attempt to detect. Default 4. */
   maxCodes?: number;
-}
-
-let detectWorker: Worker | null = null;
-function getDetectWorker(): Worker {
-  if (!detectWorker) detectWorker = new QrDetectWorker();
-  return detectWorker;
+  /** Cancel this invocation. Cancellation rejects rather than returning [] . */
+  signal?: AbortSignal;
+  /**
+   * Run the longer local recovery pass. Normal scans are capped at 8 seconds;
+   * deep scans are capped at 20 seconds.
+   */
+  deep?: boolean;
+  /** Receives a small, bounded set of scan-stage updates. */
+  onProgress?: (message: string) => void;
 }
 
 /**
- * Detect every QR code in the source image. Runs jsQR off-thread.
- * Returns an empty array if no QRs are present (this is the common case
- * for non-QR designs — fast no-op).
+ * Detect every QR code in the source image. Every invocation owns a worker,
+ * so a slow/cancelled scan can never consume another scan's messages.
  */
-// ─── Server-side fallback detection ─────────────────────────────────────
-// Uploads the image to /api/detect-qr and runs jsQR in Node.js over
-// multiple preprocessing variants. Used when the in-browser worker finds
-// nothing — bypasses all wasm/CORS/CSP/browser-compatibility issues.
-async function detectQRsOnServer(image: HTMLImageElement): Promise<DetectedQR[]> {
-  try {
-    const canvas = document.createElement('canvas');
-    canvas.width = image.naturalWidth || image.width;
-    canvas.height = image.naturalHeight || image.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return [];
-    // White background so transparent pixels become white, not black —
-    // otherwise a QR on a transparent PNG looks dark on black → unreadable.
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(image, 0, 0);
-    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
-    if (!blob) return [];
-
-    const form = new FormData();
-    form.append('image', blob, 'design.png');
-    const resp = await fetch('/api/detect-qr', { method: 'POST', body: form });
-    if (!resp.ok) return [];
-    const json = await resp.json() as { qrCodes?: DetectedQR[] };
-    return json.qrCodes ?? [];
-  } catch {
-    return [];
-  }
-}
-
 export function detectQRsInImage(
   image: HTMLImageElement,
   options: DetectQRsOptions = {}
@@ -90,78 +62,207 @@ export function detectQRsInImage(
   return new Promise((resolve, reject) => {
     const width = image.naturalWidth || image.width;
     const height = image.naturalHeight || image.height;
+    const deep = options.deep === true;
+    const deadlineMs = deep ? 20_000 : 8_000;
+    const deadlineAt = Date.now() + deadlineMs;
+    const signal = options.signal;
+    const requestedMaxCodes = options.maxCodes ?? 4;
+    const maxCodes = Number.isFinite(requestedMaxCodes)
+      ? Math.max(0, Math.floor(requestedMaxCodes))
+      : 4;
+    let worker: Worker | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
 
-    if (!width || !height) {
-      // Image not decoded yet — skip worker, go straight to server fallback
-      detectQRsOnServer(image).then(resolve).catch(reject);
+    const userError = (message: string): Error => new Error(message);
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (worker) {
+        worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
+        worker.terminate();
+        worker = null;
+      }
+      fn();
+    };
+    const onAbort = () => settle(() => reject(userError('QR detection was cancelled.')));
+    if (signal?.aborted) {
+      onAbort();
       return;
     }
-
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return reject(new Error('Failed to get canvas context for QR detection'));
-    // Use a white background so transparent designs don't trip jsQR's
-    // contrast detection (it expects opaque B/W).
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(0, 0, width, height);
-    ctx.drawImage(image, 0, 0);
-
-    const imageData = ctx.getImageData(0, 0, width, height);
-    const buffer = new Uint8ClampedArray(imageData.data);
-
-    const worker = getDetectWorker();
-
-    const onMessage = (e: MessageEvent) => {
-      // Forward worker log messages to the main-thread console so failures
-      // are visible without needing DevTools worker context switching.
-      if (e.data.type === 'log') {
-        console.log('[QR worker]', e.data.message);
-        return; // keep listening — result comes in a separate message
+    if (!width || !height || width <= 0 || height <= 0 ||
+        !Number.isFinite(width) || !Number.isFinite(height)) {
+      reject(userError('The image is not ready for QR detection.'));
+      return;
+    }
+    if (maxCodes === 0) {
+      resolve([]);
+      return;
+    }
+    const progress = (message: string) => {
+      // The worker emits only these bounded stage labels. Do not surface
+      // decoder payloads (or arbitrary worker strings) through this callback.
+      const allowed = new Set([
+        'Preparing QR scan',
+        'Scanning original raster',
+        'Trying enhanced local variants',
+        'Scanning image regions',
+        'Finishing QR scan',
+      ]);
+      if (allowed.has(message)) {
+        try { options.onProgress?.(message); } catch { /* progress is advisory */ }
       }
-      if (e.data.type === 'warn') {
-        console.warn('[QR worker]', e.data.message);
-        return;
-      }
-
-      worker.removeEventListener('message', onMessage);
-      worker.removeEventListener('error', onError);
-
-      if (e.data.type === 'error') return reject(new Error(e.data.error));
-
-      const codes = (e.data.qrCodes ?? []) as DetectedQR[];
-      if (codes.length > 0) {
-        resolve(codes);
-        return;
-      }
-
-      // Worker found nothing — try the server-side fallback before giving up.
-      console.log('[QR] Worker found 0 codes, trying server-side fallback…');
-      detectQRsOnServer(image).then((serverCodes) => {
-        if (serverCodes.length > 0) {
-          console.log(`[QR] Server fallback found ${serverCodes.length} QR(s)`);
-        } else {
-          console.log('[QR] Server fallback also found 0 QRs — design has no QR code');
-        }
-        resolve(serverCodes);
-      }).catch(() => resolve([]));
     };
-
-    const onError = (err: ErrorEvent) => {
-      worker.removeEventListener('message', onMessage);
-      worker.removeEventListener('error', onError);
-      // Worker crashed — try server fallback
-      console.warn('[QR] Worker error, trying server fallback:', err.message);
-      detectQRsOnServer(image).then(resolve).catch(() => resolve([]));
-    };
-
-    worker.addEventListener('message', onMessage);
-    worker.addEventListener('error', onError);
-    worker.postMessage(
-      { imageData: buffer, width, height, maxCodes: options.maxCodes ?? 4 },
-      [buffer.buffer]
+    const pixelBudget = deep ? 4_000_000 : 2_000_000;
+    const rasterScale = Math.min(
+      1,
+      2400 / Math.max(width, height),
+      Math.sqrt(pixelBudget / (width * height)),
     );
+    let rasterWidth = Math.max(1, Math.round(width * rasterScale));
+    let rasterHeight = Math.max(1, Math.round(height * rasterScale));
+    // Rounding can add a few pixels beyond the budget for unusual aspect
+    // ratios. Trim the longer edge until both hard raster caps hold.
+    while (rasterWidth * rasterHeight > pixelBudget || Math.max(rasterWidth, rasterHeight) > 2400) {
+      if (rasterWidth >= rasterHeight && rasterWidth > 1) {
+        rasterWidth--;
+      } else if (rasterHeight > 1) {
+        rasterHeight--;
+      } else {
+        break;
+      }
+    }
+    const rasterScaleX = width / rasterWidth;
+    const rasterScaleY = height / rasterHeight;
+    const sanitizeCodes = (rawCodes: DetectedQR[], coordinatesAreSource: boolean): DetectedQR[] => {
+      return rawCodes.flatMap((raw) => {
+        const payload = typeof raw?.payload === 'string' ? raw.payload : '';
+        const corners = raw?.corners;
+        if (!corners) return [];
+        const map = (point?: { x: number; y: number }) => coordinatesAreSource
+          ? { x: point?.x ?? Number.NaN, y: point?.y ?? Number.NaN }
+          : { x: (point?.x ?? Number.NaN) * rasterScaleX, y: (point?.y ?? Number.NaN) * rasterScaleY };
+        const mappedCorners = {
+          topLeft: map(corners.topLeft),
+          topRight: map(corners.topRight),
+          bottomLeft: map(corners.bottomLeft),
+          bottomRight: map(corners.bottomRight),
+        };
+        const points = Object.values(mappedCorners);
+        if (!points.every((point) =>
+          Number.isFinite(point.x) && Number.isFinite(point.y) &&
+          point.x >= 0 && point.y >= 0 && point.x <= width && point.y <= height)) return [];
+        const xs = points.map((point) => point.x);
+        const ys = points.map((point) => point.y);
+        const bbox = {
+          x: Math.min(...xs),
+          y: Math.min(...ys),
+          width: Math.max(...xs) - Math.min(...xs),
+          height: Math.max(...ys) - Math.min(...ys),
+        };
+        if (bbox.width < 8 || bbox.height < 8) return [];
+        return [{
+          ...raw,
+          payload,
+          bbox,
+          corners: mappedCorners,
+          rotation: Math.atan2(
+            mappedCorners.topRight.y - mappedCorners.topLeft.y,
+            mappedCorners.topRight.x - mappedCorners.topLeft.x,
+          ),
+          estimatedModuleSize: Number.isFinite(raw.estimatedModuleSize)
+            ? raw.estimatedModuleSize * (coordinatesAreSource ? 1 : (rasterScaleX + rasterScaleY) / 2)
+            : Math.hypot(
+              mappedCorners.topRight.x - mappedCorners.topLeft.x,
+              mappedCorners.topRight.y - mappedCorners.topLeft.y,
+            ) / 21,
+        }];
+      });
+    };
+    const onMessage = (e: MessageEvent) => {
+      if (settled) return;
+      const data = e.data as {
+        type?: string;
+        message?: string;
+        qrCodes?: DetectedQR[];
+        error?: string;
+        code?: string;
+        coordinateSpace?: 'source' | 'raster';
+      };
+      if (data.type === 'progress') {
+        if (data.message) progress(data.message);
+        return;
+      }
+      if (data.type === 'error') {
+        settle(() => reject(userError(
+          data.code === 'timeout'
+            ? (deep
+              ? 'Deep QR detection timed out after 20 seconds. Try a smaller image.'
+              : 'QR detection timed out after 8 seconds. Try Deep scan or a smaller image.')
+            : 'QR detection failed. Please try again.',
+        )));
+        return;
+      }
+      if (data.type !== 'result') return;
+      const codes = sanitizeCodes(
+        Array.isArray(data.qrCodes) ? data.qrCodes : [],
+        data.coordinateSpace === 'source',
+      );
+      settle(() => resolve(codes.slice(0, maxCodes)));
+    };
+    const onError = () => settle(() => reject(userError('QR detection failed. Please try again.')));
+
+    timer = setTimeout(() => {
+      settle(() => reject(userError(
+        deep
+          ? 'Deep QR detection timed out after 20 seconds. Try a smaller image.'
+          : 'QR detection timed out after 8 seconds. Try Deep scan or a smaller image.',
+      )));
+    }, Math.max(0, deadlineAt - Date.now()));
+    signal?.addEventListener('abort', onAbort, { once: true });
+    progress('Preparing QR scan');
+
+    try {
+      // Read no more than 2MP for normal scans / 4MP for deep scans and never
+      // more than a 2400px edge. This keeps canvas readback bounded while the
+      // worker maps all geometry back to source-image coordinates.
+      const canvas = document.createElement('canvas');
+      canvas.width = rasterWidth;
+      canvas.height = rasterHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) {
+        settle(() => reject(userError('QR detection could not read the image.')));
+        return;
+      }
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, rasterWidth, rasterHeight);
+      ctx.drawImage(image, 0, 0, rasterWidth, rasterHeight);
+      if (settled) return;
+      const imageData = ctx.getImageData(0, 0, rasterWidth, rasterHeight);
+      const buffer = new Uint8ClampedArray(imageData.data);
+
+      worker = new QrDetectWorker();
+      worker.addEventListener('message', onMessage);
+      worker.addEventListener('error', onError);
+      worker.postMessage(
+        {
+          imageData: buffer,
+          width: rasterWidth,
+          height: rasterHeight,
+          sourceWidth: width,
+          sourceHeight: height,
+          maxCodes,
+          deep,
+          deadlineAt,
+        },
+        [buffer.buffer],
+      );
+    } catch {
+      settle(() => reject(userError('QR detection could not read the image.')));
+    }
   });
 }
 
