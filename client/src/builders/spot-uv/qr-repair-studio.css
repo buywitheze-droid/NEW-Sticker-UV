@@ -1,0 +1,88 @@
+.qr-repair-studio {
+  /* Mirror the active editor's blue work surface and green action treatment.
+     These are intentionally scoped: the studio does not alter the app theme. */
+  --background: #244e7a;
+  --foreground: #e8eef6;
+  --muted: #2d5a8a;
+  --muted-foreground: #c2d1e2;
+  --popover: #2d5a8a;
+  --popover-foreground: #e8eef6;
+  --card: #2d5a8a;
+  --card-foreground: #e8eef6;
+  --border: #3a6aa0;
+  --input: #244e7a;
+  --primary: #4dff80;
+  --primary-foreground: #05321a;
+  --secondary: #3a6aa0;
+  --secondary-foreground: #e8eef6;
+  --accent: #3a6aa0;
+  --accent-foreground: #e8eef6;
+  --ring: #4dff80;
+}
+
+/* Keep legacy utility surfaces in the editor's token-driven visual language
+   without touching shared dialog or input styles. */
+.qr-repair-studio .bg-\[\#0e1a30\],
+.qr-repair-studio .bg-\[\#0d1830\],
+.qr-repair-studio .bg-\[\#0b1324\] { background-color: var(--card) !important; }
+.qr-repair-studio .bg-slate-950,
+.qr-repair-studio .bg-slate-950\/25,
+.qr-repair-studio .bg-slate-950\/35,
+.qr-repair-studio .bg-slate-950\/45,
+.qr-repair-studio .bg-slate-950\/50,
+.qr-repair-studio .bg-slate-950\/70,
+.qr-repair-studio .bg-slate-900\/50,
+.qr-repair-studio .bg-slate-900\/60 { background-color: color-mix(in srgb, var(--muted) 52%, transparent) !important; }
+.qr-repair-studio .border-slate-800,
+.qr-repair-studio .border-slate-700,
+.qr-repair-studio .border-slate-600 { border-color: var(--border) !important; }
+.qr-repair-studio .text-white,
+.qr-repair-studio .text-slate-100,
+.qr-repair-studio .text-slate-200,
+.qr-repair-studio .text-slate-300 { color: var(--foreground) !important; }
+.qr-repair-studio .text-slate-400,
+.qr-repair-studio .text-slate-500,
+.qr-repair-studio .text-slate-600 { color: var(--muted-foreground) !important; }
+.qr-repair-studio .border-sky-700\/70,
+.qr-repair-studio .border-sky-800\/70 { border-color: var(--border) !important; }
+.qr-repair-studio .bg-sky-950\/20,
+.qr-repair-studio .bg-sky-950\/25,
+.qr-repair-studio .bg-sky-950\/30,
+.qr-repair-studio .bg-sky-950\/40 { background-color: color-mix(in srgb, var(--primary) 8%, transparent) !important; }
+.qr-repair-studio .text-sky-100,
+.qr-repair-studio .text-sky-200,
+.qr-repair-studio .text-sky-300 { color: var(--primary) !important; }
+.qr-repair-studio .border-fuchsia-400\/20,
+.qr-repair-studio .border-fuchsia-400\/25 { border-color: var(--border) !important; }
+.qr-repair-studio .bg-fuchsia-950\/10,
+.qr-repair-studio .bg-fuchsia-950\/20 { background-color: color-mix(in srgb, var(--muted) 50%, transparent) !important; }
+.qr-repair-studio .text-fuchsia-100 { color: var(--foreground) !important; }
+.qr-repair-studio details > summary { color: var(--foreground); }
+.qr-repair-studio input[type="range"] { accent-color: var(--primary); }
+
+/* Select content is portaled outside of the studio dialog, so it receives its
+   own explicit local surface rather than relying on inherited tokens. */
+.qrs-select-popover {
+  background: #2d5a8a !important;
+  border-color: #3a6aa0 !important;
+  color: #e8eef6 !important;
+}
+.qrs-select-popover [role="option"]:focus,
+.qrs-select-popover [role="option"][data-highlighted] {
+  background: #3a6aa0 !important;
+  color: #e8eef6 !important;
+}
+
+@media (max-width: 640px) {
+  .qr-repair-studio { max-height: 100dvh !important; width: 100vw !important; border-radius: 0; }
+  .qr-repair-studio [data-radix-dialog-close] { right: .75rem; top: .75rem; }
+  .qr-repair-studio .qr-repair-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    padding-bottom: max(.5rem, env(safe-area-inset-bottom));
+  }
+}
+
+.qrs-logo-selector .qrs-logo-coordinates summary { list-style: none; }
+.qrs-logo-selector .qrs-logo-coordinates summary::-webkit-details-marker { display: none; }

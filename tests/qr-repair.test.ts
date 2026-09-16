@@ -12,7 +12,7 @@ import {
   verifyQRRepairAtScale,
   verifyQRRepairPixels,
 } from "../client/src/builders/spot-uv/lib/qr-repair";
-import type { QRRepairDraft } from "../client/src/builders/spot-uv/lib/qr-repair-types";
+import type { QRRepairDraft, QRRepairOptions } from "../client/src/builders/spot-uv/lib/qr-repair-types";
 import { scaleQRRepairDrafts } from "../client/src/builders/spot-uv/lib/qr-repair-geometry";
 
 function installDocumentShim(): void {
@@ -85,6 +85,32 @@ function assertPixelsEqual(
   const actualData = actual.getContext("2d").getImageData(actualX, actualY, width, height).data;
   const expectedData = expected.getContext("2d").getImageData(expectedX, expectedY, width, height).data;
   assert.deepEqual([...actualData], [...expectedData]);
+}
+
+function assertCanvasDiffOnlyInRegion(
+  actual: ReturnType<typeof createCanvas>,
+  expected: ReturnType<typeof createCanvas>,
+  changed: { x: number; y: number; width: number; height: number },
+): void {
+  const actualData = actual.getContext("2d").getImageData(0, 0, actual.width, actual.height).data;
+  const expectedData = expected.getContext("2d").getImageData(0, 0, expected.width, expected.height).data;
+  let changedPixelCount = 0;
+  for (let y = 0; y < actual.height; y++) {
+    for (let x = 0; x < actual.width; x++) {
+      const offset = (y * actual.width + x) * 4;
+      const differs = [0, 1, 2, 3].some((channel) => actualData[offset + channel] !== expectedData[offset + channel]);
+      if (!differs) continue;
+      assert.ok(
+        x >= changed.x &&
+        y >= changed.y &&
+        x < changed.x + changed.width &&
+        y < changed.y + changed.height,
+        `pixel changed outside protected logo slot at ${x},${y}`,
+      );
+      changedPixelCount++;
+    }
+  }
+  assert.ok(changedPixelCount > 0, "replacement logo did not change any selected pixels");
 }
 
 test("samples QR colours and suggests a same-hue contrast-safe pair", async () => {
@@ -344,6 +370,139 @@ test("applies transparent and semitransparent source-logo pixels without alpha b
   const applied = source.getContext("2d").getImageData(16, 12, 2, 1).data;
   assert.deepEqual([...applied], [...expectedLogo.getContext("2d").getImageData(0, 0, 2, 1).data]);
   verifyQRRepairPixels(source as unknown as HTMLCanvasElement, [repair]);
+});
+
+test("renders a curated replacement only inside its selected slot and retains it through scale/apply", async () => {
+  const source = createCanvas(128, 128);
+  const logoRegion = { x: 0.45, y: 0.45, width: 0.1, height: 0.1 };
+  const original = draft("replacement-original", 16, "repair-test", {
+    preserveLogo: true,
+    logoRegion,
+  });
+  const plain = await buildQRRepair(source as unknown as HTMLCanvasElement, {
+    ...original,
+    options: { ...original.options, preserveLogo: false },
+  });
+  source.getContext("2d").drawImage(plain.canvas, 16, 12);
+  paintPattern(source, 16 + 43, 12 + 43, 10, 10);
+
+  const replacement: QRRepairDraft = {
+    ...original,
+    id: "replacement-instagram",
+    options: { ...original.options, replacementLogo: "instagram" },
+  };
+  const originalResult = await buildQRRepair(source as unknown as HTMLCanvasElement, original);
+  const replacementResult = await buildQRRepair(source as unknown as HTMLCanvasElement, replacement);
+  assert.equal(replacementResult.verified, true);
+  assert.equal(replacementResult.decodedPayload, replacement.options.payload);
+  assert.equal(replacementResult.draft.options.replacementLogo, "instagram");
+  assert.ok(replacementResult.warnings.some((warning) => /changes the protected source appearance/i.test(warning)));
+  assertCanvasDiffOnlyInRegion(
+    replacementResult.canvas as unknown as ReturnType<typeof createCanvas>,
+    originalResult.canvas as unknown as ReturnType<typeof createCanvas>,
+    { x: 43, y: 43, width: 10, height: 10 },
+  );
+  assert.equal(verifyQRRepairAtScale(replacementResult, 1).verified, true);
+
+  const scaledCanvas = createCanvas(256, 256);
+  const scaledContext = scaledCanvas.getContext("2d");
+  scaledContext.imageSmoothingEnabled = false;
+  scaledContext.drawImage(source, 0, 0, 256, 256);
+  const [scaled] = scaleQRRepairDrafts([replacement], 128, 128, 256, 256);
+  assert.equal(scaled.options.replacementLogo, "instagram");
+  const expectedScaled = await buildQRRepair(scaledCanvas as unknown as HTMLCanvasElement, scaled);
+  const scaledLogoX = Math.round((scaled.options.logoRegion!.x) * scaled.region.width);
+  const scaledLogoY = Math.round((scaled.options.logoRegion!.y) * scaled.region.height);
+  const scaledLogoRight = Math.round(
+    (scaled.options.logoRegion!.x + scaled.options.logoRegion!.width) * scaled.region.width,
+  );
+  const scaledLogoBottom = Math.round(
+    (scaled.options.logoRegion!.y + scaled.options.logoRegion!.height) * scaled.region.height,
+  );
+  await applyQRRepairs(scaledCanvas as unknown as HTMLCanvasElement, [scaled]);
+  assertPixelsEqual(
+    scaledCanvas as unknown as ReturnType<typeof createCanvas>,
+    expectedScaled.canvas as unknown as ReturnType<typeof createCanvas>,
+    scaled.region.x + scaledLogoX,
+    scaled.region.y + scaledLogoY,
+    scaledLogoRight - scaledLogoX,
+    scaledLogoBottom - scaledLogoY,
+    scaledLogoX,
+    scaledLogoY,
+  );
+  verifyQRRepairPixels(scaledCanvas as unknown as HTMLCanvasElement, [scaled]);
+  const scaledBuild = await buildQRRepair(scaledCanvas as unknown as HTMLCanvasElement, scaled);
+  assert.equal(scaledBuild.draft.options.replacementLogo, "instagram");
+  assert.equal(verifyQRRepairAtScale(scaledBuild, 1).verified, true);
+});
+
+test("rejects unknown or incomplete curated-logo requests", async () => {
+  const source = createCanvas(128, 128);
+  const base = draft("replacement-validation", 16);
+  const selectedRegion = { x: 0.45, y: 0.45, width: 0.1, height: 0.1 };
+  await assert.rejects(
+    () => buildQRRepair(source as unknown as HTMLCanvasElement, {
+      ...base,
+      options: {
+        ...base.options,
+        preserveLogo: true,
+        logoRegion: selectedRegion,
+        replacementLogo: "twitter" as unknown as NonNullable<QRRepairOptions["replacementLogo"]>,
+      },
+    }),
+    /replacement logo is invalid|instagram|facebook|whatsapp|youtube/i,
+  );
+  await assert.rejects(
+    () => buildQRRepair(source as unknown as HTMLCanvasElement, {
+      ...base,
+      options: {
+        ...base.options,
+        preserveLogo: true,
+        replacementLogo: "instagram",
+      },
+    }),
+    /explicit logoRegion/i,
+  );
+  await assert.rejects(
+    () => buildQRRepair(source as unknown as HTMLCanvasElement, {
+      ...base,
+      options: {
+        ...base.options,
+        preserveLogo: false,
+        logoRegion: selectedRegion,
+        replacementLogo: "instagram",
+      },
+    }),
+    /preserveLogo/i,
+  );
+});
+
+test("blocks an unreadable replacement without fallback or editing the source", async () => {
+  const source = createCanvas(128, 128);
+  const base = draft("replacement-unreadable", 16);
+  const plain = await buildQRRepair(source as unknown as HTMLCanvasElement, base);
+  source.getContext("2d").drawImage(plain.canvas, 16, 12);
+  const before = source.toBuffer("image/png");
+  const replacement: QRRepairDraft = {
+    ...base,
+    options: {
+      ...base.options,
+      preserveLogo: true,
+      logoRegion: { x: 0, y: 0, width: 1, height: 1 },
+      replacementLogo: "youtube",
+    },
+  };
+  const result = await buildQRRepair(source as unknown as HTMLCanvasElement, replacement);
+  assert.equal(result.verified, false);
+  assert.notEqual(result.decodedPayload, replacement.options.payload);
+  assert.ok(result.warnings.some((warning) => /replacement logo could not be verified/i.test(warning)));
+  assert.ok(result.warnings.some((warning) => /no fallback|another brand|slot resize/i.test(warning)));
+  assert.equal(verifyQRRepairAtScale(result, 1).verified, false);
+  await assert.rejects(
+    () => applyQRRepairs(source as unknown as HTMLCanvasElement, [replacement]),
+    /replacement logo|fallback|verified/i,
+  );
+  assert.deepEqual(source.toBuffer("image/png"), before);
 });
 
 test("validates every repair before painting and keeps application atomic", async () => {

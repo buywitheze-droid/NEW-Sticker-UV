@@ -1,5 +1,6 @@
 import QRCode from "qrcode";
 import jsQR from "jsqr";
+import { renderPopularQRLogo, type PopularQRLogoId } from "./popular-qr-logos";
 import type {
   QRRepairDraft,
   QRRepairLogoRegion,
@@ -25,6 +26,12 @@ const MIN_CONTRAST_RATIO = 4.5;
 const MAX_PATCH_EDGE = 8192;
 const MAX_PATCH_PIXELS = 16_000_000;
 const MAX_VERIFY_EDGE = 1200;
+const POPULAR_QR_LOGO_IDS: readonly PopularQRLogoId[] = [
+  "instagram",
+  "facebook",
+  "whatsapp",
+  "youtube",
+];
 export type QRRepairScale = number | { x: number; y: number };
 function scaleAxes(scale: QRRepairScale): { x: number; y: number } {
   return typeof scale === "number" ? { x: scale, y: scale } : scale;
@@ -113,6 +120,18 @@ function assertLogoRegion(logoRegion: QRRepairLogoRegion): QRRepairLogoRegion {
     width: logoRegion.width,
     height: logoRegion.height,
   };
+}
+
+function assertReplacementLogo(value: unknown): PopularQRLogoId {
+  if (
+    typeof value !== "string" ||
+    !POPULAR_QR_LOGO_IDS.includes(value as PopularQRLogoId)
+  ) {
+    throw new Error(
+      "QR repair replacement logo is invalid; choose instagram, facebook, whatsapp, or youtube",
+    );
+  }
+  return value as PopularQRLogoId;
 }
 
 function createCanvas(width: number, height: number): HTMLCanvasElement {
@@ -420,6 +439,7 @@ function validateOptions(options: QRRepairOptions): {
   preserveLogo: boolean;
   logoScale: number;
   logoRegion?: QRRepairLogoRegion;
+  replacementLogo?: PopularQRLogoId;
 } {
   if (!options || typeof options !== "object") throw new Error("QR repair options are missing");
   if (typeof options.payload !== "string" || options.payload.length === 0) {
@@ -447,6 +467,17 @@ function validateOptions(options: QRRepairOptions): {
   const logoRegion = options.logoRegion === undefined
     ? undefined
     : assertLogoRegion(options.logoRegion);
+  const replacementLogo = options.replacementLogo === undefined
+    ? undefined
+    : assertReplacementLogo(options.replacementLogo);
+  if (replacementLogo !== undefined) {
+    if (!preserveLogo) {
+      throw new Error("QR repair replacement logo requires preserveLogo to be true");
+    }
+    if (!logoRegion) {
+      throw new Error("QR repair replacement logo requires an explicit logoRegion");
+    }
+  }
   return {
     payload: options.payload,
     dark: options.dark,
@@ -456,6 +487,7 @@ function validateOptions(options: QRRepairOptions): {
     preserveLogo,
     logoScale,
     ...(logoRegion ? { logoRegion } : {}),
+    ...(replacementLogo ? { replacementLogo } : {}),
   };
 }
 
@@ -550,10 +582,17 @@ function warningForVerification(
   pixelsPerModule: number,
   protectedLogo: boolean,
   logoOverlapsFinder: boolean,
+  replacementLogo?: PopularQRLogoId,
 ): string[] {
   const warnings: string[] = [];
   if (ratio < MIN_CONTRAST_RATIO) warnings.push("Low contrast: these colors may be harder to scan in print. Test a printed sample.");
   if (pixelsPerModule < 2) warnings.push("QR has fewer than two pixels per module");
+  if (replacementLogo) {
+    warnings.push(
+      `Selected ${replacementLogo} replacement logo changes the protected source appearance; ` +
+      "the chosen asset stays in the requested slot.",
+    );
+  }
   if (logoOverlapsFinder) {
     warnings.push(
       "Protected logo overlaps a QR corner recognition square; exact payload and output-scale " +
@@ -566,6 +605,12 @@ function warningForVerification(
       warnings.push(
         "The protected logo may cover QR corner recognition squares or too many modules; " +
         "it was not automatically removed, moved, or shrunk.",
+      );
+    }
+    if (replacementLogo) {
+      warnings.push(
+        `The selected ${replacementLogo} replacement logo could not be verified at this size; ` +
+        "there is no fallback to another brand, removal, or slot resize.",
       );
     }
   }
@@ -699,26 +744,33 @@ export async function buildQRRepair(
   }
 
   if (logo) {
-    const sourceLogoX = region.x + logo.x;
-    const sourceLogoY = region.y + logo.y;
     context.imageSmoothingEnabled = false;
-    // Keep source pixels exactly as supplied. In particular, do not use the
-    // selected QR colours or scale the logo. Clear first so transparent logo
-    // pixels are also copied faithfully instead of revealing new modules
-    // underneath. A canvas-wide "copy" composite operation would clear the
-    // rest of the patch in some canvas implementations.
     context.clearRect(logo.x, logo.y, logo.width, logo.height);
-    context.drawImage(
-      source,
-      sourceLogoX,
-      sourceLogoY,
-      logo.width,
-      logo.height,
-      logo.x,
-      logo.y,
-      logo.width,
-      logo.height,
-    );
+    if (options.replacementLogo) {
+      // Replacement assets intentionally change only this selected slot.
+      // Paint the QR light colour behind the curated icon so its transparent
+      // parts cannot reveal old source pixels or newly generated modules.
+      context.fillStyle = options.light;
+      context.fillRect(logo.x, logo.y, logo.width, logo.height);
+      renderPopularQRLogo(context, options.replacementLogo, logo);
+    } else {
+      const sourceLogoX = region.x + logo.x;
+      const sourceLogoY = region.y + logo.y;
+      // Keep source pixels exactly as supplied. In particular, do not use the
+      // selected QR colours or scale the logo. The cleared destination means
+      // transparent source pixels are copied faithfully.
+      context.drawImage(
+        source,
+        sourceLogoX,
+        sourceLogoY,
+        logo.width,
+        logo.height,
+        logo.x,
+        logo.y,
+        logo.width,
+        logo.height,
+      );
+    }
   }
 
   const ratio = dark && light ? contrastRatio(options.dark, options.light) : 1;
@@ -730,6 +782,7 @@ export async function buildQRRepair(
     pixelsPerModule,
     options.preserveLogo,
     logoOverlapsFinderWarning,
+    options.replacementLogo,
   );
   if (decoded.bounded) {
     warnings.push("QR verification used a bounded scan image");
@@ -747,6 +800,7 @@ export async function buildQRRepair(
       preserveLogo: options.preserveLogo,
       logoScale: options.logoScale,
       ...(options.logoRegion ? { logoRegion: { ...options.logoRegion } } : {}),
+      ...(options.replacementLogo ? { replacementLogo: options.replacementLogo } : {}),
     },
   };
   return {
@@ -817,9 +871,11 @@ function verifyCanvasAtScale(
   const decoded = decodeExact(target, result.draft.options.payload);
   const ppm = result.pixelsPerModule * actualScale;
   const warning = decoded.decodedPayload !== result.draft.options.payload
-      ? result.draft.options.preserveLogo
-        ? "QR payload did not survive the final-size resample; the protected logo may cover corner recognition squares or too many modules. It was not automatically removed, moved, or shrunk."
-        : "QR payload did not survive the final-size resample"
+      ? result.draft.options.replacementLogo
+        ? `QR payload did not survive the final-size resample with the selected ${result.draft.options.replacementLogo} replacement logo; there is no fallback to another brand, removal, or slot resize.`
+        : result.draft.options.preserveLogo
+          ? "QR payload did not survive the final-size resample; the protected logo may cover corner recognition squares or too many modules. It was not automatically removed, moved, or shrunk."
+          : "QR payload did not survive the final-size resample"
       : ppm < 2
         ? "QR has fewer than two pixels per module at this scale"
         : undefined;
@@ -901,7 +957,10 @@ export function verifyQRRepairPixels(
     if (decoded.decodedPayload !== options.payload) {
       throw new Error(
         `QR pixel verification failed payload for repair ${draft.id || index}` +
-        (options.preserveLogo
+        (options.replacementLogo
+          ? `; the selected ${options.replacementLogo} replacement logo could not be verified. ` +
+            "There is no fallback to another brand, removal, or slot resize."
+          : options.preserveLogo
           ? "; the protected logo may cover corner recognition squares or too many modules. " +
             "It was not automatically removed, moved, or shrunk."
           : ""),
@@ -959,7 +1018,8 @@ export async function applyQRRepairs(
     const result = await buildQRRepair(sourceCanvas, draft);
     if (!result.verified) {
       throw new Error(
-        result.warnings.find((warning) => warning.includes("protected logo")) ??
+        result.warnings.find((warning) => warning.includes("replacement logo could not")) ??
+          result.warnings.find((warning) => warning.includes("protected logo")) ??
           result.warnings.find((warning) => warning.includes("QR payload")) ??
           "QR repair could not be verified",
       );

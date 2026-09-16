@@ -331,7 +331,7 @@ export function LogoRegionSelector({
   };
 
   return (
-    <div className={cn("mt-3", className)}>
+    <div className={cn("qrs-logo-selector mt-3", className)}>
       <div
         ref={selectorRef}
         className={cn(
@@ -391,48 +391,50 @@ export function LogoRegionSelector({
       <p className="mt-1 text-[11px] leading-4 text-slate-500">
         Drag anywhere in the crop to draw or redraw its exact source location and size.
       </p>
-      <fieldset
-        disabled={disabled || Boolean(drawError)}
-        className="mt-3 rounded-lg border border-slate-800 bg-slate-950/35 p-2"
-      >
-        <legend className="px-1 text-[11px] font-medium text-slate-300">Enter logo coordinates (%)</legend>
-        <p className="mb-2 text-[10px] leading-4 text-slate-500">
-          Keyboard users can enter the same normalized source rectangle. Values are percentages of the QR crop.
-        </p>
-        <div className="grid grid-cols-2 gap-2">
-          {LOGO_REGION_FIELDS.map(([field, label]) => (
-            <div key={field}>
-              <label htmlFor={`logo-region-${field}`} className="mb-1 block text-[10px] text-slate-400">
-                {label}
-              </label>
-              <input
-                id={`logo-region-${field}`}
-                type="number"
-                min={0}
-                max={percentageMax(field)}
-                step={0.01}
-                value={percentageInputValues[field]}
-                onChange={(event) => updatePercentage(field, event.target.value)}
-                onBlur={() => {
-                  if (!percentageValidationError) {
-                    setPercentageInputValues((previous) => ({
-                      ...previous,
-                      [field]: Number((inputRegion[field] * 100).toFixed(2)).toString(),
-                    }));
-                  }
-                }}
-                className="h-8 w-full rounded-md border border-slate-700 bg-slate-950/70 px-2 text-xs text-slate-100 outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-                aria-label={label}
-              />
-            </div>
-          ))}
-        </div>
-        {percentageValidationError ? (
-          <p role="alert" className="mt-2 text-[10px] leading-4 text-rose-300">
-            {percentageValidationError}
+      <details className="qrs-logo-coordinates mt-3 rounded-lg border border-slate-800 bg-slate-950/35">
+        <summary className="cursor-pointer px-2.5 py-2 text-[11px] font-medium text-slate-300">
+          Enter logo coordinates (%)
+        </summary>
+        <fieldset disabled={disabled || Boolean(drawError)} className="border-t border-slate-800 p-2">
+          <legend className="sr-only">Logo coordinates (%)</legend>
+          <p className="mb-2 text-[10px] leading-4 text-slate-500">
+            Keyboard users can enter the same normalized source rectangle. Values are percentages of the QR crop.
           </p>
-        ) : null}
-      </fieldset>
+          <div className="grid grid-cols-2 gap-2">
+            {LOGO_REGION_FIELDS.map(([field, label]) => (
+              <div key={field}>
+                <label htmlFor={`logo-region-${field}`} className="mb-1 block text-[10px] text-slate-400">
+                  {label}
+                </label>
+                <input
+                  id={`logo-region-${field}`}
+                  type="number"
+                  min={0}
+                  max={percentageMax(field)}
+                  step={0.01}
+                  value={percentageInputValues[field]}
+                  onChange={(event) => updatePercentage(field, event.target.value)}
+                  onBlur={() => {
+                    if (!percentageValidationError) {
+                      setPercentageInputValues((previous) => ({
+                        ...previous,
+                        [field]: Number((inputRegion[field] * 100).toFixed(2)).toString(),
+                      }));
+                    }
+                  }}
+                  className="h-8 w-full rounded-md border border-slate-700 bg-slate-950/70 px-2 text-xs text-slate-100 outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                  aria-label={label}
+                />
+              </div>
+            ))}
+          </div>
+          {percentageValidationError ? (
+            <p role="alert" className="mt-2 text-[10px] leading-4 text-rose-300">
+              {percentageValidationError}
+            </p>
+          ) : null}
+        </fieldset>
+      </details>
     </div>
   );
 }

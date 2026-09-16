@@ -6,6 +6,11 @@ import {
   buildQRRepair,
   verifyQRRepairAtScale,
 } from "./lib/qr-repair";
+import {
+  detectPopularQRLogo,
+  POPULAR_QR_LOGOS,
+  type PopularQRLogoId,
+} from "./lib/popular-qr-logos";
 import type {
   QRRepairDraft,
   QRRepairOptions,
@@ -32,6 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import "./qr-repair-studio.css";
 import {
   Check,
   CheckCircle2,
@@ -87,11 +93,21 @@ type ArtContentRect = {
   width: number;
   height: number;
 };
-type StudioRepairOptions = QRRepairOptions & { logoRegion?: LogoRegion };
+type StudioRepairOptions = QRRepairOptions & {
+  logoRegion?: LogoRegion;
+  replacementLogo?: PopularQRLogoId;
+};
+type LogoRecognitionState = {
+  status: "checking" | "matched" | "uncertain" | "none" | "error";
+  brand?: PopularQRLogoId;
+  region?: LogoRegion;
+  reason?: string;
+};
 
 const DEFAULT_DARK = "#111827";
 const DEFAULT_LIGHT = "#ffffff";
 const INITIAL_MANUAL_REGION: QRRepairRegion = { x: 0, y: 0, width: 0, height: 0 };
+const KEEP_ORIGINAL_LOGO = "__keep_original__";
 
 function imageDimensions(image: HTMLImageElement) {
   return {
@@ -214,6 +230,9 @@ function draftSignature(draft: QRRepairDraft) {
       // Keep this explicit so a selected logo rectangle is always part of the
       // tested identity, including when older drafts omit the optional field.
       logoRegion: options.logoRegion ?? null,
+      // Replacement assets are part of the rendered pixels and therefore
+      // must invalidate a previously verified preview.
+      replacementLogo: options.replacementLogo ?? null,
     },
     originalPayload: draft.originalPayload,
   });
@@ -223,7 +242,17 @@ function draftLogoRegion(options: QRRepairOptions): LogoRegion | undefined {
   return (options as StudioRepairOptions).logoRegion;
 }
 
-function validLogoRegion(region: LogoRegion | undefined) {
+function draftReplacementLogo(options: QRRepairOptions): PopularQRLogoId | undefined {
+  return (options as StudioRepairOptions).replacementLogo;
+}
+
+function popularLogoLabel(id: PopularQRLogoId | undefined) {
+  return id
+    ? POPULAR_QR_LOGOS.find((logo) => logo.id === id)?.label ?? id
+    : "Keep original";
+}
+
+function validLogoRegion(region: LogoRegion | undefined): region is LogoRegion {
   if (!region) return false;
   const values = [region.x, region.y, region.width, region.height];
   return values.every(Number.isFinite) &&
@@ -424,6 +453,7 @@ export function QRRepairStudio({
   const [unsafeDetectionCount, setUnsafeDetectionCount] = useState(0);
   const [artContentRect, setArtContentRect] = useState<ArtContentRect>({ left: 0, top: 0, width: 100, height: 100 });
   const [artLoadVersion, setArtLoadVersion] = useState(0);
+  const [logoRecognition, setLogoRecognition] = useState<Record<string, LogoRecognitionState>>({});
   const manualCounter = useRef(0);
   const manualPointerStart = useRef<{ x: number; y: number } | null>(null);
   const artRef = useRef<HTMLDivElement>(null);
@@ -433,9 +463,29 @@ export function QRRepairStudio({
   const detectedMetaRef = useRef<Record<string, DetectionMeta>>({});
   const lastImageIdentity = useRef<string | null>(null);
   const lastImageElement = useRef<HTMLImageElement | null>(null);
+  const sourceRecognitionIds = useRef(new WeakMap<HTMLImageElement, string>());
+  const sourceRecognitionCounter = useRef(0);
+  const recognitionAttempts = useRef(new Set<string>());
+  const recognitionRequest = useRef(0);
+  const logoChoiceVersions = useRef<Record<string, number>>({});
+  const manuallyEditedLogoChoices = useRef(new Set<string>());
+  const keepOriginalLogoChoices = useRef(new Set<string>());
+  const openRef = useRef(open);
+  const selectedIdRef = useRef<string | null>(selectedId);
+  const previousRecognitionSelection = useRef<string | null>(selectedId);
   const currentImageIdentity = imageIdentity(image);
   const dimensions = imageDimensions(image);
   const printScaleY = printScaleYProp ?? printScale;
+  openRef.current = open;
+  selectedIdRef.current = selectedId;
+  const sourceRecognitionId = useMemo(() => {
+    const existing = sourceRecognitionIds.current.get(image);
+    if (existing) return existing;
+    sourceRecognitionCounter.current += 1;
+    const next = `source-${sourceRecognitionCounter.current}`;
+    sourceRecognitionIds.current.set(image, next);
+    return next;
+  }, [image]);
   const sourceUrl = useMemo(() => {
     // The retained Image is drawable even after its upload blob URL has been
     // revoked. A new <img> cannot reload that URL; use a bounded display copy.
@@ -549,6 +599,12 @@ export function QRRepairStudio({
     setError(null);
     setSampleError(seeded.nextSampleError);
     setLogoCropUnavailableId(null);
+    setLogoRecognition({});
+    recognitionAttempts.current = new Set();
+    logoChoiceVersions.current = {};
+    manuallyEditedLogoChoices.current = new Set();
+    keepOriginalLogoChoices.current = new Set();
+    recognitionRequest.current += 1;
     setSelectedId(firstId);
     setQueueIds(firstId ? new Set([firstId]) : new Set());
     setManualRegion(INITIAL_MANUAL_REGION);
@@ -702,17 +758,184 @@ export function QRRepairStudio({
       ? tested[selectedId]
       : undefined
     : undefined;
+
+  useEffect(() => {
+    const previousId = previousRecognitionSelection.current;
+    if (previousId === selectedId) return;
+    previousRecognitionSelection.current = selectedId;
+    recognitionRequest.current += 1;
+    if (!previousId) return;
+    setLogoRecognition((previous) => {
+      if (previous[previousId]?.status !== "checking") return previous;
+      const next = { ...previous };
+      delete next[previousId];
+      return next;
+    });
+  }, [selectedId]);
+
+  // Recognition is deliberately separate from QR decoding. It receives only
+  // the retained source pixels and the bounded QR rectangle, never payload
+  // text. A source/draft key prevents a selection from starting duplicate
+  // background recognizers when unrelated controls rerender the dialog.
+  useEffect(() => {
+    if (
+      !open ||
+      !selectedDraft ||
+      draftsRef.current[selectedDraft.id] !== selectedDraft ||
+      isManualDraft(selectedDraft) ||
+      !validRegion(selectedDraft.region)
+    ) {
+      return;
+    }
+    const region = boundedRegion(selectedDraft.region, image);
+    if (!validRegion(region)) return;
+    const requestKey = [
+      sourceRecognitionId,
+      selectedDraft.id,
+      region.x,
+      region.y,
+      region.width,
+      region.height,
+    ].join(":");
+    if (recognitionAttempts.current.has(requestKey)) return;
+    recognitionAttempts.current.add(requestKey);
+
+    const requestId = ++recognitionRequest.current;
+    const requestedDraft = selectedDraft;
+    const requestedSignature = draftSignature(requestedDraft);
+    const requestedLogoVersion = logoChoiceVersions.current[requestedDraft.id] ?? 0;
+    let active = true;
+    setLogoRecognition((previous) => ({
+      ...previous,
+      [requestedDraft.id]: { status: "checking" },
+    }));
+
+    void (async () => {
+      try {
+        const detected = await detectPopularQRLogo(image, region);
+        if (!active || requestId !== recognitionRequest.current || !openRef.current) return;
+
+        if (
+          detected.status !== "matched" ||
+          !validLogoRegion(detected.region)
+        ) {
+          setLogoRecognition((previous) => ({
+            ...previous,
+            [requestedDraft.id]: {
+              status: detected.status,
+              reason: "reason" in detected ? detected.reason : "Logo match was not usable.",
+            },
+          }));
+          return;
+        }
+
+        const current = draftsRef.current[requestedDraft.id];
+        const currentLogoVersion = logoChoiceVersions.current[requestedDraft.id] ?? 0;
+        const choicesChanged =
+          !current ||
+          draftSignature(current) !== requestedSignature ||
+          currentLogoVersion !== requestedLogoVersion ||
+          manuallyEditedLogoChoices.current.has(requestedDraft.id);
+
+        // A strong result is useful even when a user changed a logo control
+        // while it was pending, but it must never replace that choice.
+        if (choicesChanged) {
+          setLogoRecognition((previous) => ({
+            ...previous,
+            [requestedDraft.id]: {
+              status: "matched",
+              brand: detected.brand,
+              region: detected.region,
+              reason: "Detected, but your logo choice was kept.",
+            },
+          }));
+          return;
+        }
+
+        const nextDraft: QRRepairDraft = {
+          ...current,
+          options: {
+            ...current.options,
+            preserveLogo: true,
+            logoRegion: { ...detected.region },
+            replacementLogo: detected.brand,
+          },
+        };
+        const result = await buildQRRepair(image, nextDraft);
+        const scaleResult = verifyQRRepairAtScale(result, { x: printScale, y: printScaleY });
+        if (
+          !active ||
+          requestId !== recognitionRequest.current ||
+          !openRef.current ||
+          draftsRef.current[requestedDraft.id] === undefined ||
+          draftSignature(draftsRef.current[requestedDraft.id]) !== requestedSignature ||
+          (logoChoiceVersions.current[requestedDraft.id] ?? 0) !== requestedLogoVersion ||
+          manuallyEditedLogoChoices.current.has(requestedDraft.id)
+        ) {
+          return;
+        }
+
+        draftsRef.current = { ...draftsRef.current, [requestedDraft.id]: nextDraft };
+        setDrafts((previous) => ({ ...previous, [requestedDraft.id]: nextDraft }));
+        setLogoCropUnavailableId((previous) =>
+          previous === requestedDraft.id ? null : previous,
+        );
+        const scale: ScaleCheck = {
+          verified: Boolean(scaleResult.verified),
+          pixelsPerModule: scaleResult.pixelsPerModule,
+          warning: scaleResult.warning,
+        };
+        setTested((previous) => ({
+          ...previous,
+          [requestedDraft.id]: {
+            signature: draftSignature(nextDraft),
+            printScale,
+            printScaleY,
+            result,
+            scale,
+          },
+        }));
+        setLogoRecognition((previous) => ({
+          ...previous,
+          [requestedDraft.id]: {
+            status: "matched",
+            brand: detected.brand,
+            region: detected.region,
+            reason:
+              result.verified && scale.verified
+                ? "Detected and preview checked. Nothing has been saved."
+                : "Detected, but the preview still needs attention before it can be applied.",
+          },
+        }));
+      } catch (recognitionError) {
+        if (!active || requestId !== recognitionRequest.current || !openRef.current) return;
+        setLogoRecognition((previous) => ({
+          ...previous,
+          [requestedDraft.id]: {
+            status: "error",
+            reason:
+              recognitionError instanceof Error
+                ? recognitionError.message
+                : "Logo recognition is unavailable.",
+          },
+        }));
+      }
+    })();
+
+    return () => {
+      active = false;
+      setLogoRecognition((previous) => {
+        if (previous[requestedDraft.id]?.status !== "checking") return previous;
+        const next = { ...previous };
+        delete next[requestedDraft.id];
+        return next;
+      });
+    };
+  }, [image, open, printScale, printScaleY, selectedDraft, sourceRecognitionId]);
+
   const handleLogoCropAvailability = useCallback(
     (available: boolean) => {
       if (!selectedDraft) return;
-      if (!available) {
-        setTested((previous) => {
-          if (!previous[selectedDraft.id]) return previous;
-          const next = { ...previous };
-          delete next[selectedDraft.id];
-          return next;
-        });
-      }
       setLogoCropUnavailableId((current) => (
         available
           ? current === selectedDraft.id ? null : current
@@ -745,17 +968,160 @@ export function QRRepairStudio({
     [],
   );
 
-  const updateOptions = useCallback(
-    (id: string, update: Partial<QRRepairOptions> & { logoRegion?: LogoRegion }) => {
-      updateDraft(id, (draft) => ({
-        ...draft,
-        options: { ...draft.options, ...update },
+  const handleCheckLogo = useCallback(async () => {
+    if (!selectedDraft) return;
+    const selectedOptions = selectedDraft.options as StudioRepairOptions;
+    const selectedRegion = selectedOptions.logoRegion;
+    if (!validLogoRegion(selectedRegion)) {
+      setError("Draw a logo rectangle first. We will not guess its location.");
+      return;
+    }
+    const region = boundedRegion(selectedDraft.region, image);
+    if (!validRegion(region)) {
+      setError("Select a usable QR region before checking its logo.");
+      return;
+    }
+
+    const requestId = ++recognitionRequest.current;
+    const draftId = selectedDraft.id;
+    const requestedSignature = draftSignature(selectedDraft);
+    const requestedLogoVersion = logoChoiceVersions.current[draftId] ?? 0;
+    setError(null);
+    setLogoRecognition((previous) => ({
+      ...previous,
+      [draftId]: { status: "checking" },
+    }));
+
+    try {
+      const detected = await detectPopularQRLogo(image, region, selectedRegion);
+      if (
+        requestId !== recognitionRequest.current ||
+        !openRef.current ||
+        selectedIdRef.current !== draftId
+      ) {
+        return;
+      }
+      if (detected.status !== "matched" || !validLogoRegion(detected.region)) {
+        setLogoRecognition((previous) => ({
+          ...previous,
+          [draftId]: {
+            status: detected.status,
+            reason: "reason" in detected ? detected.reason : "Logo match was not usable.",
+          },
+        }));
+        return;
+      }
+
+      const current = draftsRef.current[draftId];
+      if (!current) return;
+      const choicesChanged =
+        draftSignature(current) !== requestedSignature ||
+        (logoChoiceVersions.current[draftId] ?? 0) !== requestedLogoVersion;
+      if (choicesChanged) return;
+
+      const currentReplacement = draftReplacementLogo(current.options);
+      const keepOriginal =
+        keepOriginalLogoChoices.current.has(draftId) ||
+        (currentReplacement !== undefined && currentReplacement !== detected.brand);
+      if (!keepOriginal && currentReplacement !== detected.brand) {
+        // This is an explicit user request to check the selected crop, so a
+        // confirmed brand can fill the replacement slot. It still invalidates
+        // any old verification and requires the normal Preview fix action.
+        updateDraft(draftId, (draft) => ({
+          ...draft,
+          options: {
+            ...draft.options,
+            preserveLogo: true,
+            logoRegion: { ...selectedRegion },
+            replacementLogo: detected.brand,
+          },
+        }));
+      }
+      setLogoRecognition((previous) => ({
+        ...previous,
+        [draftId]: {
+          status: "matched",
+          brand: detected.brand,
+          region: detected.region,
+          reason: keepOriginal
+            ? "Detected, but your original-logo choice was kept."
+            : "Detected. Preview fix to check this selected replacement.",
+        },
       }));
+    } catch (recognitionError) {
+      if (
+        requestId !== recognitionRequest.current ||
+        !openRef.current ||
+        selectedIdRef.current !== draftId
+      ) {
+        return;
+      }
+      setLogoRecognition((previous) => ({
+        ...previous,
+        [draftId]: {
+          status: "error",
+          reason:
+            recognitionError instanceof Error
+              ? recognitionError.message
+              : "Logo recognition is unavailable.",
+        },
+      }));
+    }
+  }, [image, selectedDraft, updateDraft]);
+
+  const updateOptions = useCallback(
+    (
+      id: string,
+      update: Partial<StudioRepairOptions>,
+      markLogoChoice = true,
+    ) => {
+      const logoChoiceEdited =
+        "preserveLogo" in update ||
+        "logoRegion" in update ||
+        "replacementLogo" in update;
+      if (logoChoiceEdited && markLogoChoice) {
+        logoChoiceVersions.current[id] = (logoChoiceVersions.current[id] ?? 0) + 1;
+        manuallyEditedLogoChoices.current.add(id);
+        setLogoRecognition((previous) => {
+          if (!previous[id]) return previous;
+          // Choosing a replacement (or restoring the original) does not
+          // change the source pixels that were recognized. Keep that context;
+          // moving the region or toggling protection must clear it.
+          if (
+            previous[id].status === "matched" &&
+            !("logoRegion" in update) &&
+            !("preserveLogo" in update)
+          ) return previous;
+          const next = { ...previous };
+          delete next[id];
+          return next;
+        });
+      }
+      updateDraft(id, (draft) => {
+        const options: StudioRepairOptions = { ...draft.options, ...update };
+        // The engine intentionally rejects a replacement without an explicit
+        // protected source region. Never leave an invalid replacement behind
+        // while the user is toggling or redrawing the logo selection.
+        if (
+          options.preserveLogo !== true ||
+          !validLogoRegion(options.logoRegion)
+        ) {
+          delete options.replacementLogo;
+        }
+        return { ...draft, options };
+      });
     },
     [updateDraft],
   );
 
   const selectDraft = (id: string) => {
+    recognitionRequest.current += 1;
+    setLogoRecognition((previous) => {
+      if (!selectedId || previous[selectedId]?.status !== "checking") return previous;
+      const next = { ...previous };
+      delete next[selectedId];
+      return next;
+    });
     setSelectedId(id);
     setError(null);
   };
@@ -971,6 +1337,9 @@ export function QRRepairStudio({
       return { ready: false, reason: "Select at least one pending repair." };
     }
     for (const draft of queueDrafts) {
+      if (logoRecognition[draft.id]?.status === "checking") {
+        return { ready: false, reason: "Checking a queued logo; wait for the logo check to finish." };
+      }
       if (!draft.options.payload.trim()) {
         return { ready: false, reason: `${draft.id.startsWith("manual-") ? "Manual" : "Detected"} payload is empty.` };
       }
@@ -1003,7 +1372,7 @@ export function QRRepairStudio({
       }
     }
     return { ready: true, reason: "All queued drafts are digitally and final-size verified." };
-  }, [logoCropUnavailableId, printScale, printScaleY, queueDrafts, tested]);
+  }, [logoCropUnavailableId, logoRecognition, printScale, printScaleY, queueDrafts, tested]);
 
   const handleApply = async () => {
     if (!applyReadiness.ready || applying) return;
@@ -1020,6 +1389,15 @@ export function QRRepairStudio({
 
   const handleDialogChange = (nextOpen: boolean) => {
     if (!nextOpen && applying) return;
+    if (!nextOpen) {
+      recognitionRequest.current += 1;
+      setLogoRecognition((previous) => {
+        if (!selectedId || previous[selectedId]?.status !== "checking") return previous;
+        const next = { ...previous };
+        delete next[selectedId];
+        return next;
+      });
+    }
     onOpenChange(nextOpen);
   };
 
@@ -1027,6 +1405,12 @@ export function QRRepairStudio({
   const selectedRegion = selectedDraft?.region ?? manualRegion;
   const selectedLogoRegion = selectedDraft ? draftLogoRegion(selectedDraft.options) : undefined;
   const selectedLogoRegionIsValid = validLogoRegion(selectedLogoRegion);
+  const selectedReplacementLogo = selectedDraft
+    ? draftReplacementLogo(selectedDraft.options)
+    : undefined;
+  const selectedLogoRecognition = selectedDraft
+    ? logoRecognition[selectedDraft.id]
+    : undefined;
   const selectedOriginalColors = selectedDraft ? sampledColors[selectedDraft.id] : undefined;
   const manualRegionIsValid = validRegion(manualRegion);
   const scanBusy = scanStatus.state === "scanning";
@@ -1034,7 +1418,7 @@ export function QRRepairStudio({
   return (
     <Dialog open={open} onOpenChange={handleDialogChange}>
       <DialogContent
-        className="flex max-h-[92dvh] w-[min(96vw,980px)] max-w-none flex-col gap-0 overflow-hidden border-slate-700 bg-[#0b1324] p-0 text-slate-100 shadow-2xl"
+        className="qr-repair-studio flex max-h-[92dvh] w-[min(96vw,980px)] max-w-none flex-col gap-0 overflow-hidden border-border bg-background p-0 text-foreground shadow-lg"
         onPointerDownOutside={(event) => {
           if (applying) event.preventDefault();
         }}
@@ -1042,14 +1426,14 @@ export function QRRepairStudio({
           if (applying) event.preventDefault();
         }}
       >
-        <DialogHeader className="shrink-0 border-b border-slate-800 bg-[#0d1830] px-5 py-4 pr-12">
+        <DialogHeader className="shrink-0 border-b border-border bg-card px-5 py-4 pr-12">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <DialogTitle className="flex items-center gap-2 text-lg text-white">
-                <ScanLine className="h-5 w-5 text-sky-300" aria-hidden="true" />
+              <DialogTitle className="flex items-center gap-2 text-lg text-foreground">
+                <ScanLine className="h-5 w-5 text-primary" aria-hidden="true" />
                 Fix QR code
               </DialogTitle>
-              <DialogDescription className="mt-1 text-slate-400">
+              <DialogDescription className="mt-1 text-muted-foreground">
                 Keep the original colors. We check the rebuilt code before anything is changed.
               </DialogDescription>
             </div>
@@ -1063,7 +1447,7 @@ export function QRRepairStudio({
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="space-y-4 p-4">
-            <section className="rounded-xl border border-slate-800 bg-[#0e1a30] p-3" aria-labelledby="detected-codes-heading">
+            <section className="rounded-xl border border-border bg-card p-3" aria-labelledby="detected-codes-heading">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h2 id="detected-codes-heading" className="text-sm font-semibold text-white">Choose a code</h2>
                   <span className="text-xs text-slate-500">The first code is selected for you</span>
@@ -1090,7 +1474,7 @@ export function QRRepairStudio({
                           key={draft.id}
                           className={cn(
                             "min-w-0 rounded-lg border p-2 transition-colors",
-                            active ? "border-sky-500/80 bg-sky-950/40" : "border-slate-800 bg-slate-950/35",
+                             active ? "border-primary bg-primary/10" : "border-border bg-muted/30",
                           )}
                         >
                           <div className="flex items-start gap-2">
@@ -1268,6 +1652,11 @@ export function QRRepairStudio({
                   <LockKeyhole className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-600" aria-hidden="true" />
                   The rebuild only targets the selected QR region; source artwork outside it is not edited.
                 </p>
+                {selectedDraft?.originalPayload?.trim() ? (
+                  <p className="mt-2 text-[11px] font-medium text-emerald-200">
+                    Original code scans. Rebuilding is optional.
+                  </p>
+                ) : null}
               </section>
 
               <section className="rounded-xl border border-slate-800 bg-[#0e1a30] p-3" aria-labelledby="verification-heading">
@@ -1355,24 +1744,48 @@ export function QRRepairStudio({
                       ) : null}
                     </div>}
 
-                    <p className="text-center text-[11px] text-slate-500">Original colors stay on by default.</p>
+                    <p className="text-center text-[11px] text-muted-foreground">Original colors stay on by default.</p>
 
                     <div className="rounded-lg border border-fuchsia-400/25 bg-fuchsia-950/10 p-2.5">
                       <div className="flex items-center gap-2">
                         <Checkbox
                           id="qr-preserve-logo"
                           checked={selectedDraft.options.preserveLogo}
-                          onCheckedChange={(checked) => updateOptions(selectedDraft.id, { preserveLogo: checked === true })}
+                          onCheckedChange={(checked) => updateOptions(
+                            selectedDraft.id,
+                            checked === true
+                              ? { preserveLogo: true }
+                              : { preserveLogo: false, replacementLogo: undefined },
+                          )}
                           disabled={applying}
                           className="border-slate-600 data-[state=checked]:border-fuchsia-300 data-[state=checked]:bg-fuchsia-500"
                         />
                         <label htmlFor="qr-preserve-logo" className="text-xs font-medium text-slate-200">
-                          Keep my logo
+                          Keep original logo
                         </label>
                       </div>
                       <p className="mt-1.5 text-[11px] leading-4 text-slate-400">
-                        Keep the logo from its exact source location and size. Draw a rectangle below; nothing is guessed.
+                        One protected area per code. Draw the exact logo area; nothing is guessed.
                       </p>
+                      <p className="mt-1 text-[11px] leading-4 text-amber-200/90">
+                        If the code has multiple logos or artwork near its corners, review the rebuilt preview and safety check before applying.
+                      </p>
+                      {!selectedDraft.options.preserveLogo && selectedLogoRecognition ? (
+                        <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-slate-400" aria-live="polite">
+                          {selectedLogoRecognition.status === "checking" ? (
+                            <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-sky-300" aria-hidden="true" />
+                          ) : null}
+                          <span>
+                            {selectedLogoRecognition.status === "checking"
+                              ? "Checking the source logo…"
+                              : selectedLogoRecognition.status === "uncertain"
+                                ? "Logo is uncertain. Keep the original or select its exact area."
+                                : selectedLogoRecognition.status === "none"
+                                  ? "No logo match found. Keep the original or select its exact area."
+                                  : selectedLogoRecognition.reason || "Logo check unavailable."}
+                          </span>
+                        </p>
+                      ) : null}
                       {selectedDraft.options.preserveLogo ? (
                         <LogoRegionSelector
                           image={image}
@@ -1382,6 +1795,112 @@ export function QRRepairStudio({
                           onAvailabilityChange={handleLogoCropAvailability}
                           disabled={applying}
                         />
+                      ) : null}
+                      {selectedDraft.options.preserveLogo && !selectedLogoRegionIsValid ? (
+                        <p className="mt-2 rounded-md border border-amber-400/25 bg-amber-950/20 px-2.5 py-2 text-[11px] leading-4 text-amber-200/90">
+                          Draw the logo area first. We do not invent a logo boundary.
+                        </p>
+                      ) : null}
+                      {selectedDraft.options.preserveLogo && selectedLogoRegionIsValid ? (
+                        <div className="mt-3 space-y-2 rounded-lg border border-slate-800 bg-slate-950/35 p-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <label htmlFor="qr-logo-replacement" className="text-[11px] font-medium text-slate-300">
+                              Logo replacement
+                            </label>
+                            {selectedLogoRecognition?.status === "checking" ? (
+                              <span className="flex items-center gap-1 text-[10px] text-sky-300" aria-live="polite">
+                                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                                Checking logo…
+                              </span>
+                            ) : null}
+                          </div>
+                          <Select
+                            value={selectedReplacementLogo ?? KEEP_ORIGINAL_LOGO}
+                            onValueChange={(value) => {
+                              if (value === KEEP_ORIGINAL_LOGO) {
+                                keepOriginalLogoChoices.current.add(selectedDraft.id);
+                                updateOptions(selectedDraft.id, { replacementLogo: undefined });
+                              } else {
+                                keepOriginalLogoChoices.current.delete(selectedDraft.id);
+                                updateOptions(selectedDraft.id, {
+                                  replacementLogo: value as PopularQRLogoId,
+                                });
+                              }
+                            }}
+                            disabled={applying || selectedLogoRecognition?.status === "checking"}
+                          >
+                            <SelectTrigger
+                              id="qr-logo-replacement"
+                              className="h-9 border-slate-700 bg-slate-950/70 text-xs text-slate-100"
+                              aria-label="Logo replacement"
+                            >
+                              <SelectValue placeholder="Keep original" />
+                            </SelectTrigger>
+                            <SelectContent className="qrs-select-popover border-slate-700 bg-[#0e1a30] text-slate-100">
+                              <SelectItem value={KEEP_ORIGINAL_LOGO} className="text-xs focus:bg-slate-800 focus:text-white">
+                                Keep original
+                              </SelectItem>
+                              {POPULAR_QR_LOGOS.map((logo) => (
+                                <SelectItem key={logo.id} value={logo.id} className="text-xs focus:bg-slate-800 focus:text-white">
+                                  <span className="inline-flex items-center gap-2">
+                                    <span
+                                      className="h-2.5 w-2.5 rounded-full"
+                                      style={{ backgroundColor: logo.color }}
+                                      aria-hidden="true"
+                                    />
+                                    {logo.label}
+                                  </span>
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {selectedLogoRecognition?.status === "matched" && selectedLogoRecognition.brand ? (
+                            <p className="text-[11px] leading-4 text-emerald-200/90">
+                              Recognized {popularLogoLabel(selectedLogoRecognition.brand)}.
+                              {selectedReplacementLogo
+                                ? ` Replacement: ${popularLogoLabel(selectedReplacementLogo)}.`
+                                : " Original logo kept."}
+                            </p>
+                          ) : null}
+                          {selectedLogoRecognition && selectedLogoRecognition.status !== "matched" && selectedLogoRecognition.status !== "checking" ? (
+                            <p className="text-[11px] leading-4 text-slate-400">
+                              {selectedLogoRecognition.status === "uncertain"
+                                ? "Logo is uncertain. Keep the original or choose a replacement only if you know it."
+                                : selectedLogoRecognition.status === "none"
+                                  ? "No logo match found. Keep the original or choose a replacement manually."
+                                  : selectedLogoRecognition.reason || "Logo check unavailable."}
+                            </p>
+                          ) : null}
+                          <p className="text-[10px] leading-4 text-slate-500">
+                            A replacement may differ from the source logo’s appearance and colors.
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-8 border-sky-800/70 bg-sky-950/25 px-2.5 text-[11px] text-sky-100 hover:bg-sky-900/50"
+                              onClick={() => void handleCheckLogo()}
+                              disabled={applying || selectedLogoRecognition?.status === "checking"}
+                            >
+                              <ScanLine className="h-3.5 w-3.5" aria-hidden="true" />
+                              Check logo
+                            </Button>
+                            {selectedReplacementLogo ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                className="h-8 px-2 text-[11px] text-slate-400 hover:bg-slate-800 hover:text-white"
+                                onClick={() => {
+                                  keepOriginalLogoChoices.current.add(selectedDraft.id);
+                                  updateOptions(selectedDraft.id, { replacementLogo: undefined });
+                                }}
+                                disabled={applying}
+                              >
+                                Restore original
+                              </Button>
+                            ) : null}
+                          </div>
+                        </div>
                       ) : null}
                     </div>
 
@@ -1486,7 +2005,7 @@ export function QRRepairStudio({
                         <SelectTrigger id="qr-ecc" className="border-slate-700 bg-slate-950/70 text-xs text-slate-100" aria-label="Error correction level">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent className="border-slate-700 bg-[#0e1a30] text-slate-100">
+                        <SelectContent className="qrs-select-popover border-slate-700 bg-[#0e1a30] text-slate-100">
                           {(["L", "M", "Q", "H"] as const).map((level) => (
                             <SelectItem key={level} value={level} className="text-xs focus:bg-slate-800 focus:text-white">
                               {level} — {level === "L" ? "7%" : level === "M" ? "15%" : level === "Q" ? "25%" : "30%"} recovery
@@ -1584,7 +2103,7 @@ export function QRRepairStudio({
             </div>
 
             <details open={scanBusy} className="rounded-xl border border-slate-800 bg-[#0e1a30] p-3">
-              <summary className="cursor-pointer text-xs font-medium text-slate-300">More tools: scan again and diagnostics</summary>
+                <summary className="cursor-pointer text-xs font-medium text-slate-300">Scan and diagnostics</summary>
               <div className="mt-3 flex flex-wrap items-center gap-2" aria-live="polite">
                 <Button type="button" variant="outline" className="border-slate-700 bg-slate-900/50 text-slate-200 hover:bg-slate-800 hover:text-white" onClick={() => onScan(false)} disabled={applying || scanBusy}>Scan again</Button>
                 <Button type="button" variant="outline" className="border-sky-700/70 bg-sky-950/30 text-sky-100 hover:bg-sky-900/50 hover:text-white" onClick={() => onScan(true)} disabled={applying || scanBusy}>Deep scan</Button>
@@ -1595,7 +2114,7 @@ export function QRRepairStudio({
           </div>
         </div>
 
-        <DialogFooter className="shrink-0 flex-row flex-wrap items-center justify-between gap-2 border-t border-slate-800 bg-[#0d1830] px-3 py-2 sm:gap-3 sm:px-5 sm:py-3">
+        <DialogFooter className="qr-repair-actions shrink-0 flex-row flex-wrap items-center justify-between gap-2 border-t border-border bg-card px-3 py-2 sm:gap-3 sm:px-5 sm:py-3">
           <div className={`min-w-0 flex-1 text-xs ${error || sampleError ? "max-sm:basis-full" : "max-sm:sr-only"}`} aria-live="polite">
             {error ? (
               <p className="flex items-start gap-1.5 text-rose-300"><ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" /> <span>{error}</span></p>
@@ -1608,7 +2127,7 @@ export function QRRepairStudio({
           <div className="flex w-full min-w-0 flex-wrap justify-end gap-2 sm:w-auto sm:shrink-0">
             <Button
               type="button"
-              className="min-w-0 max-sm:flex-1 max-sm:gap-1 max-sm:px-1 max-sm:text-[11px] bg-sky-500 text-slate-950 hover:bg-sky-400"
+              className="min-w-0 max-sm:flex-1 max-sm:gap-1 max-sm:px-1 max-sm:text-[11px] bg-primary text-primary-foreground hover:bg-primary/90"
               onClick={handleVerify}
               disabled={!selectedDraft || applying || verifyingId !== null}
               aria-label="Preview fix and verify QR repair"
@@ -1620,7 +2139,7 @@ export function QRRepairStudio({
               type="button"
               variant="outline"
               className="min-w-0 max-sm:flex-1 max-sm:gap-1 max-sm:px-1 max-sm:text-[11px] border-slate-700 bg-slate-900/60 text-slate-200 hover:bg-slate-800 hover:text-white"
-              onClick={() => onOpenChange(false)}
+              onClick={() => handleDialogChange(false)}
               disabled={applying}
               aria-label="Cancel QR repair studio"
             >
@@ -1628,7 +2147,7 @@ export function QRRepairStudio({
             </Button>
             <Button
               type="button"
-              className="min-w-0 max-sm:flex-1 max-sm:gap-1 max-sm:px-1 max-sm:text-[11px] bg-emerald-500 text-slate-950 hover:bg-emerald-400"
+              className="min-w-0 max-sm:flex-1 max-sm:gap-1 max-sm:px-1 max-sm:text-[11px] bg-primary text-primary-foreground hover:bg-primary/90"
               onClick={handleApply}
               disabled={applying || !applyReadiness.ready}
               aria-label="Apply verified QR repairs"

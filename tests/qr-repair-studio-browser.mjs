@@ -14,6 +14,7 @@ import { createCanvas, loadImage } from "@napi-rs/canvas";
 import QRCode from "qrcode";
 import jsQR from "jsqr";
 import { PDFDocument } from "pdf-lib";
+import { transform } from "esbuild";
 
 const { chromium } = await import(
   process.env.PLAYWRIGHT_MODULE || "/mnt/pid2/node_modules/playwright/index.mjs"
@@ -196,6 +197,98 @@ function makeLogoFixture() {
 }
 
 const logoFixture = makeLogoFixture();
+
+async function loadPopularLogoModule() {
+  const source = await fs.readFile(
+    new URL("../client/src/builders/spot-uv/lib/popular-qr-logos.ts", import.meta.url),
+    "utf8",
+  );
+  const { code } = await transform(source, {
+    loader: "ts",
+    format: "esm",
+    target: "es2022",
+    sourcemap: false,
+  });
+  const module = await import(
+    `data:text/javascript;base64,${Buffer.from(code, "utf8").toString("base64")}`,
+  );
+  assert.equal(typeof module.renderPopularQRLogo, "function", "popular logo module must expose renderPopularQRLogo");
+  assert.ok(Array.isArray(module.POPULAR_QR_LOGOS), "popular logo module must expose its metadata");
+  return module;
+}
+
+function makePopularLogoFixture(popularLogoModule) {
+  const artwork = createCanvas(ART_WIDTH, ART_HEIGHT);
+  const context = artwork.getContext("2d");
+  context.fillStyle = LIGHT;
+  context.fillRect(0, 0, ART_WIDTH, ART_HEIGHT);
+  context.fillStyle = "#d6c7b8";
+  context.fillRect(0, 0, 64, ART_HEIGHT);
+  context.fillRect(ART_WIDTH - 64, 0, 64, ART_HEIGHT);
+  context.fillStyle = "#e8d8c8";
+  context.fillRect(70, 70, 80, 80);
+  context.fillRect(ART_WIDTH - 150, ART_HEIGHT - 150, 80, 80);
+
+  const matrix = QRCode.create(PAYLOAD, { errorCorrectionLevel: "H" }).modules;
+  const moduleSize = 8;
+  const quietZone = 4;
+  const qrSize = matrix.size * moduleSize;
+  const totalSize = (matrix.size + quietZone * 2) * moduleSize;
+  const logoSide = 64;
+  const definitions = [
+    { x: 100, y: 250, id: "instagram" },
+    { x: 740, y: 250, id: "facebook" },
+  ];
+  const metadata = new Map(popularLogoModule.POPULAR_QR_LOGOS.map((logo) => [logo.id, logo]));
+  const regions = definitions.map(({ x, y }) => ({
+    x: x + quietZone * moduleSize,
+    y: y + quietZone * moduleSize,
+    width: qrSize,
+    height: qrSize,
+  }));
+  const logos = definitions.map(({ id }, index) => {
+    const region = regions[index];
+    const logo = {
+      x: region.x + Math.round((qrSize - logoSide) / 2),
+      y: region.y + Math.round((qrSize - logoSide) / 2),
+      width: logoSide,
+      height: logoSide,
+    };
+    const logoMetadata = metadata.get(id);
+    assert.ok(logoMetadata, `popular logo metadata is missing ${id}`);
+    return { ...logo, id, color: logoMetadata.color };
+  });
+
+  definitions.forEach(({ x, y }, index) => {
+    context.fillStyle = LIGHT;
+    context.fillRect(x, y, totalSize, totalSize);
+    context.fillStyle = DARK;
+    for (let row = 0; row < matrix.size; row += 1) {
+      for (let column = 0; column < matrix.size; column += 1) {
+        if (matrix.get(column, row)) {
+          context.fillRect(
+            x + (column + quietZone) * moduleSize,
+            y + (row + quietZone) * moduleSize,
+            moduleSize,
+            moduleSize,
+          );
+        }
+      }
+    }
+    popularLogoModule.renderPopularQRLogo(context, definitions[index].id, logos[index]);
+  });
+
+  return {
+    name: "qr-repair-studio-popular-logos.png",
+    mimeType: "image/png",
+    buffer: artwork.toBuffer("image/png"),
+    regions,
+    logos,
+  };
+}
+
+const popularLogoModule = await loadPopularLogoModule();
+const popularLogoFixture = makePopularLogoFixture(popularLogoModule);
 
 function makeManualFixture() {
   const artwork = createCanvas(ART_WIDTH, ART_HEIGHT);
@@ -600,7 +693,9 @@ async function waitForStableScan(page) {
 }
 
 async function setDisclosure(page, summaryText, open) {
-  const summary = page.locator("summary").filter({ hasText: summaryText }).first();
+  const currentSummary = summaryText === "More tools: scan again and diagnostics"
+    ? "Scan and diagnostics" : summaryText;
+  const summary = page.locator("summary").filter({ hasText: currentSummary }).first();
   assert.equal(await summary.count(), 1, `missing disclosure: ${summaryText}`);
   const details = summary.locator("xpath=..");
   const currentOpen = await details.evaluate((element) => element.open);
@@ -673,6 +768,39 @@ async function assertSimpleModal(page, viewportLabel) {
     /Close/,
     `${viewportLabel}: Close visible label changed unexpectedly`,
   );
+}
+
+async function assertPrimaryButtonBounds(page, viewportLabel) {
+  const viewport = page.viewportSize();
+  assert.ok(viewport, `${viewportLabel}: Playwright viewport is unavailable`);
+  // Radix's short dialog transition can still be settling after a viewport
+  // change. Require actual in-viewport bounds, rather than sampling that frame.
+  await page.waitForFunction(() => [
+    "Preview fix and verify QR repair",
+    "Apply verified QR repairs",
+    "Cancel QR repair studio",
+  ].every((label) => {
+    const button = document.querySelector(`button[aria-label="${label}"]`);
+    if (!button) return false;
+    const rect = button.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 &&
+      rect.right <= innerWidth && rect.bottom <= innerHeight;
+  }), undefined, { timeout: 3000 });
+  for (const name of [
+    "Preview fix and verify QR repair",
+    "Apply verified QR repairs",
+    "Cancel QR repair studio",
+  ]) {
+    const bounds = await page.getByRole("button", { name, exact: true }).boundingBox();
+    assert.ok(
+      bounds &&
+        bounds.x >= 0 &&
+        bounds.y >= 0 &&
+        bounds.x + bounds.width <= viewport.width &&
+        bounds.y + bounds.height <= viewport.height,
+      `${viewportLabel}: primary action is clipped: ${name} ${JSON.stringify(bounds)}`,
+    );
+  }
 }
 
 async function assertPayloadReadOnly(page, expected = PAYLOAD) {
@@ -771,9 +899,9 @@ async function drawLogoSelection(page, logo, region, label, offsets = {}) {
 }
 
 async function assertKeepLogoControl(page, label) {
-  const keepLogo = page.getByRole("checkbox", { name: "Keep my logo", exact: true });
-  assert.equal(await keepLogo.count(), 1, `${label}: Keep my logo control is missing`);
-  assert.equal(await keepLogo.isVisible(), true, `${label}: Keep my logo must be visible outside Advanced`);
+  const keepLogo = page.getByRole("checkbox", { name: /Keep (?:my|original) logo/i });
+  assert.equal(await keepLogo.count(), 1, `${label}: Keep original logo control is missing`);
+  assert.equal(await keepLogo.isVisible(), true, `${label}: Keep original logo must be visible outside Advanced`);
   const advanced = page.locator("summary").filter({ hasText: ADVANCED_OPTIONS_SUMMARY })
     .first().locator("xpath=..");
   assert.equal(await advanced.evaluate((element) => element.open), false,
@@ -782,6 +910,7 @@ async function assertKeepLogoControl(page, label) {
 }
 
 async function assertLogoWidthInvalidatesApply(page, apply, label) {
+  await setDisclosure(page, "Enter logo coordinates (%)", true);
   const numericFields = page.locator('input[type="number"]:visible');
   const descriptors = await numericFields.evaluateAll((elements) => elements.map((element) => {
     const input = element;
@@ -808,6 +937,7 @@ async function assertLogoWidthInvalidatesApply(page, apply, label) {
     `${label}: an out-of-bounds logo width must invalidate Apply`,
   );
   await widthField.fill(validValue);
+  await setDisclosure(page, "Enter logo coordinates (%)", false);
 }
 
 async function runLogoPreservationScenario(browser) {
@@ -892,6 +1022,171 @@ async function runLogoPreservationScenario(browser) {
   }
 }
 
+async function runPopularLogoScenario(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const serverQRRequests = [];
+  page.on("request", (request) => {
+    if (/\/api\/detect-qr(?:\?|$)/.test(request.url())) serverQRRequests.push(request.url());
+  });
+
+  try {
+    await page.goto(baseURL);
+    await page.locator("input[type=file]").setInputFiles(popularLogoFixture);
+    await page.getByRole("button", { name: /QR Repair Studio/ }).waitFor({ timeout: 30_000 });
+
+    const originalDownload = await downloadPrintPdf(page, "popular-logo fixture before repair");
+    const originalDecoded = await decodeDownloadedPdf(originalDownload, "popular-logo fixture before repair");
+    assert.ok(
+      originalDecoded.payloads.includes(PAYLOAD),
+      "popular-logo fixture before repair did not decode the QR payload",
+    );
+    for (const logo of popularLogoFixture.logos) {
+      nearestLogoImage(originalDownload, logo, `popular-logo fixture before repair (${logo.id})`);
+    }
+
+    await waitForStableScan(page);
+    assert.deepEqual(serverQRRequests, [], "popular-logo recognition must use local QR detection");
+    await assertSimpleModal(page, "popular-logo replacement");
+
+    // Recognition is based on the actual Simple Icons-backed pixels in the
+    // uploaded source. It should fill the protected region and replacement
+    // choice without changing the editor image.
+    await page.getByText(/^(?:Detected|Recognized) Instagram\./, { exact: false }).waitFor({ timeout: 30_000 });
+    const keepLogo = page.getByRole("checkbox", { name: /Keep (?:my|original) logo/i });
+    assert.equal(await keepLogo.isChecked(), true, "recognized Instagram logo should enable Keep original logo");
+    assert.equal(
+      await page.getByRole("application", { name: /Logo region selector/ }).count(),
+      1,
+      "recognized Instagram logo should expose its protected region",
+    );
+    const replacement = page.getByRole("combobox", { name: "Logo replacement", exact: true });
+    assert.equal(await replacement.count(), 1, "recognized logo should expose the replacement choice");
+    assert.match(await replacement.innerText(), /Instagram/, "recognition should choose the matching brand");
+
+    await verifySelected(page);
+    const apply = page.getByRole("button", { name: "Apply verified QR repairs", exact: true });
+    assert.equal(await apply.isDisabled(), false, "recognized popular-logo preview should be ready to apply");
+
+    // Preview is deliberately not an edit: closing the studio without Apply
+    // must leave the downloaded artwork byte-for-byte unchanged.
+    await page.getByRole("button", { name: "Cancel QR repair studio", exact: true }).click();
+    const previewOnlyDownload = await downloadPrintPdf(page, "popular-logo fixture after preview only");
+    const previewOnlyDecoded = await decodeDownloadedPdf(
+      previewOnlyDownload,
+      "popular-logo fixture after preview only",
+    );
+    assert.equal(
+      previewOnlyDecoded.pixelFingerprint,
+      originalDecoded.pixelFingerprint,
+      "popular-logo Preview changed artwork before Apply",
+    );
+
+    // Reopen the unchanged source and deliberately switch while an explicit
+    // recognition request is in flight. The stale first result must not
+    // overwrite the selected second QR's Facebook recognition.
+    await waitForStableScan(page);
+    await page.getByText(/^(?:Detected|Recognized) Instagram\./, { exact: false }).waitFor({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Check logo", exact: true }).click();
+    await page.getByRole("button", { name: "Edit detected QR code 2", exact: true }).click();
+    await page.getByText(/^(?:Detected|Recognized) Facebook\./, { exact: false }).waitFor({ timeout: 30_000 });
+    assert.equal(
+      await page.getByText(/^(?:Detected|Recognized) Instagram\./, { exact: false }).count(),
+      0,
+      "a stale first-logo result leaked into the selected second QR",
+    );
+
+    await page.getByRole("button", { name: "Edit detected QR code 1", exact: true }).click();
+    await page.getByText(/^(?:Detected|Recognized) Instagram\./, { exact: false }).waitFor({ timeout: 30_000 });
+    const restore = page.getByRole("button", { name: "Restore original", exact: true });
+    assert.equal(await restore.count(), 1, "recognized replacement should offer Restore original");
+    await restore.click();
+    await page.getByText(/^(?:Detected|Recognized) Instagram\. Original logo kept\.$/, { exact: true })
+      .waitFor({ timeout: 30_000 });
+    assert.equal(await apply.isDisabled(), true, "Restore original must invalidate the previous preview");
+    await page.waitForTimeout(400);
+    assert.equal(
+      await page.getByText("Checking logo…", { exact: true }).count(),
+      0,
+      "Restore original started a recognition resuggestion loop",
+    );
+
+    // The manual choice is explicit and independent of the auto-recognized
+    // source. YouTube is rendered by the same genuine Simple Icons module as
+    // the fixture, then verified before it can be applied.
+    await replacement.click();
+    await page.getByRole("option", { name: "YouTube", exact: true }).click();
+    await page.getByText(/^(?:Detected|Recognized) Instagram\. Replacement: YouTube\.$/, { exact: true })
+      .waitFor({ timeout: 30_000 });
+    assert.equal(await apply.isDisabled(), true, "manual logo choice must require a fresh preview");
+    await verifySelected(page);
+    assert.equal(await apply.isDisabled(), false, "verified manual YouTube replacement should enable Apply");
+    await page.screenshot({ path: "/tmp/popular-logo-replacement.png" });
+
+    await apply.click();
+    await page.getByText("QR repairs applied", { exact: true }).waitFor({ timeout: 30_000 });
+    const repairedDownload = await downloadPrintPdf(page, "popular-logo fixture after YouTube replacement");
+    const repairedDecoded = await decodeDownloadedPdf(
+      repairedDownload,
+      "popular-logo fixture after YouTube replacement",
+    );
+    assert.ok(
+      repairedDecoded.payloads.includes(PAYLOAD),
+      "popular-logo replacement PDF did not decode the original payload",
+    );
+    const firstLogo = popularLogoFixture.logos[0];
+    const secondLogo = popularLogoFixture.logos[1];
+    const youtube = popularLogoModule.POPULAR_QR_LOGOS.find((logo) => logo.id === "youtube");
+    assert.ok(youtube, "popular logo metadata is missing YouTube");
+    nearestLogoImage(
+      repairedDownload,
+      { ...firstLogo, color: youtube.color },
+      "applied YouTube replacement",
+    );
+    nearestLogoImage(repairedDownload, secondLogo, "unselected Facebook source logo");
+
+    // The pre-existing square marks are intentionally not one of the curated
+    // templates. Check-logo must report an unknown/unsupported brand rather
+    // than proposing a replacement.
+    const unknownPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const unknownRequests = [];
+    unknownPage.on("request", (request) => {
+      if (/\/api\/detect-qr(?:\?|$)/.test(request.url())) unknownRequests.push(request.url());
+    });
+    try {
+      await unknownPage.goto(baseURL);
+      await unknownPage.locator("input[type=file]").setInputFiles(logoFixture);
+      await unknownPage.getByRole("button", { name: /QR Repair Studio/ }).waitFor({ timeout: 30_000 });
+      await waitForStableScan(unknownPage);
+      const unknownKeep = await assertKeepLogoControl(unknownPage, "unknown square logo");
+      await unknownKeep.check();
+      await drawLogoSelection(
+        unknownPage,
+        logoFixture.logos[0],
+        logoFixture.regions[0],
+        "unknown square logo",
+      );
+      await unknownPage.getByRole("button", { name: "Check logo", exact: true }).click();
+      await unknownPage.getByText(
+        /^(?:No supported brand found\. Keep the original or choose a brand manually\.|No logo match found\. Keep the original or choose a replacement manually\.|Logo is uncertain\. Keep the original or choose a brand only if you know it\.|Logo is uncertain\. Keep the original or choose a replacement only if you know it\.)$/,
+      ).waitFor({ timeout: 30_000 });
+      assert.equal(
+        await unknownPage.getByText(/^(?:Detected|Recognized) (?:Instagram|Facebook|WhatsApp|YouTube)\./, { exact: false }).count(),
+        0,
+        "an unknown square logo was auto-recognized as a popular brand",
+      );
+      assert.deepEqual(unknownRequests, [], "unknown-logo recognition must stay local");
+    } finally {
+      await unknownPage.close();
+    }
+
+    console.log(
+      "popular logo scenario: authentic Simple Icons recognition, preview-only behavior, stale-result guard, restore/manual choice, unknown logo handling, PDF pixels, and payload passed",
+    );
+  } finally {
+    await page.close();
+  }
+}
+
 async function runRepairScenario(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const serverQRRequests = [];
@@ -911,12 +1206,16 @@ async function runRepairScenario(browser) {
     assert.equal(await page.getByText("QR code 1", { exact: true }).count(), 1);
     assert.equal(await page.getByText("QR code 2", { exact: true }).count(), 1);
     await assertSimpleModal(page, "desktop");
+    await assertPrimaryButtonBounds(page, "desktop default modal");
 
-    // Capture the real modal before any edit and verify the compact flow on
-    // both viewport sizes without scrolling into the technical controls.
+    // Capture the default modal before Advanced is opened and verify that the
+    // compact flow keeps all primary actions inside the viewport.
+    await page.screenshot({ path: "/tmp/simple-qr-default-desktop.png", fullPage: true });
     await page.screenshot({ path: "/tmp/simple-qr-before.png", fullPage: true });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await assertSimpleModal(page, "mobile");
+    await page.setViewportSize({ width: 320, height: 740 });
+    await assertSimpleModal(page, "320px mobile default modal");
+    await assertPrimaryButtonBounds(page, "320px mobile default modal");
+    await page.screenshot({ path: "/tmp/simple-qr-default-mobile-320.png", fullPage: true });
     await page.screenshot({ path: "/tmp/simple-qr-mobile.png", fullPage: true });
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByRole("button", { name: "Cancel QR repair studio", exact: true }).click();
@@ -1171,6 +1470,7 @@ const browser = await chromium.launch({
 const failures = [];
 for (const [name, scenario] of [
   ["logo preservation", runLogoPreservationScenario],
+  ["popular logo replacement", runPopularLogoScenario],
   ["detected QR repair", runRepairScenario],
   ["manual recovery", runManualRecoveryScenario],
   ["scan status", runScanStatusScenario],

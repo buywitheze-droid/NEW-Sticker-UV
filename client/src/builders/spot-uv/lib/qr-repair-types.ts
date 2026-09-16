@@ -1,3 +1,5 @@
+import type { PopularQRLogoId } from "./popular-qr-logos";
+
 export type QRRepairSource = HTMLImageElement | HTMLCanvasElement;
 export type QRRepairRegion = { x: number; y: number; width: number; height: number };
 /** A logo rectangle expressed as fractions of its QR repair region. */
@@ -19,6 +21,8 @@ export interface QRRepairOptions {
    * location and size. Omitted values retain the legacy centered logo crop.
    */
   logoRegion?: QRRepairLogoRegion;
+  /** Optional curated brand mark rendered into the explicit protected slot. */
+  replacementLogo?: PopularQRLogoId;
 }
 
 export interface QRRepairDraft {
