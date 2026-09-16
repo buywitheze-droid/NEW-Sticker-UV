@@ -44,3 +44,15 @@ Popular-logo recognition may stage a clean replacement, but never save one autom
 **Why:** The user approved automatic replacement in the preview, with explicit Apply and an unchanged-original fallback for uncertain brands. A QR destination or brand-colored patch alone is not evidence of its logo.
 
 **How to apply:** Require strong visual evidence against curated assets; describe supported variants honestly. Preserve manual choices across delayed recognition, offer Restore original, and verify actual QR output before applying. General auto-preview for all edits was separately declined.
+
+Explicit Keep-logo detection locates artwork; it does not choose a replacement.
+
+**Why:** The user approved finding the area automatically when enabling protection while retaining its original pixels. This is distinct from the previously approved automatic clean-replacement suggestion.
+
+**How to apply:** Respect an existing selection, use strong visual matches only for a missing area, retain manual fallback, and do not automatically preview or apply a repair from this action.
+
+Compare preserved logo ink with the original ink, not the outer badge rectangle.
+
+**Why:** Curated glyphs have white padding; assuming their colored pixels fill the entire badge causes false preservation failures, especially with non-square artwork dimensions.
+
+**How to apply:** In exported-image tests, measure the original colored pixel bounds and compare them with the repaired output. For cancellation tests, hold a real recognition response rather than relying on seeing a brief loading state.

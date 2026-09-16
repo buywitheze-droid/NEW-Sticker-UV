@@ -925,6 +925,7 @@ export function QRRepairStudio({
     return () => {
       active = false;
       setLogoRecognition((previous) => {
+        if (requestId !== recognitionRequest.current) return previous;
         if (previous[requestedDraft.id]?.status !== "checking") return previous;
         const next = { ...previous };
         delete next[requestedDraft.id];
@@ -1080,6 +1081,7 @@ export function QRRepairStudio({
         "logoRegion" in update ||
         "replacementLogo" in update;
       if (logoChoiceEdited && markLogoChoice) {
+        recognitionRequest.current += 1;
         logoChoiceVersions.current[id] = (logoChoiceVersions.current[id] ?? 0) + 1;
         manuallyEditedLogoChoices.current.add(id);
         setLogoRecognition((previous) => {
@@ -1113,6 +1115,88 @@ export function QRRepairStudio({
     },
     [updateDraft],
   );
+
+  const handleKeepLogo = useCallback(async (checked: boolean) => {
+    if (!selectedDraft || applying) return;
+    const id = selectedDraft.id;
+    if (checked) keepOriginalLogoChoices.current.add(id);
+    // "Keep" always means the source pixels, even if a clean replacement was
+    // previously suggested. Toggling off also cancels any pending recognition.
+    updateOptions(id, { preserveLogo: checked, replacementLogo: undefined });
+    if (!checked) return;
+
+    const requested = draftsRef.current[id];
+    // A previously selected area is more authoritative than a fresh guess.
+    if (!requested || validLogoRegion(draftLogoRegion(requested.options))) return;
+    const region = boundedRegion(requested.region, image);
+    if (!validRegion(region)) {
+      setLogoRecognition((previous) => ({
+        ...previous,
+        [id]: { status: "error", reason: "Select a usable QR region before looking for a logo." },
+      }));
+      return;
+    }
+
+    const requestId = ++recognitionRequest.current;
+    const signature = draftSignature(requested);
+    const version = logoChoiceVersions.current[id] ?? 0;
+    const isCurrent = () =>
+      requestId === recognitionRequest.current &&
+      openRef.current &&
+      selectedIdRef.current === id &&
+      !!draftsRef.current[id] &&
+      draftSignature(draftsRef.current[id]) === signature &&
+      (logoChoiceVersions.current[id] ?? 0) === version;
+    setLogoRecognition((previous) => ({ ...previous, [id]: { status: "checking" } }));
+    try {
+      // Let the checkbox/checking state render before the bounded local search.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      if (!isCurrent()) return;
+      const detected = await detectPopularQRLogo(image, region);
+      if (!isCurrent()) return;
+      if (detected.status !== "matched" || !validLogoRegion(detected.region)) {
+        setLogoRecognition((previous) => ({
+          ...previous,
+          [id]: {
+            status: detected.status === "matched" ? "uncertain" : detected.status,
+            reason: "No reliable logo area found. Draw a rectangle around your logo.",
+          },
+        }));
+        return;
+      }
+      updateOptions(id, {
+        preserveLogo: true,
+        logoRegion: { ...detected.region },
+        replacementLogo: undefined,
+      }, false);
+      setLogoRecognition((previous) => ({
+        ...previous,
+        [id]: {
+          status: "matched",
+          brand: detected.brand,
+          region: detected.region,
+          reason: "Logo found. Original artwork kept; preview the fix before applying.",
+        },
+      }));
+    } catch {
+      if (!isCurrent()) return;
+      setLogoRecognition((previous) => ({
+        ...previous,
+        [id]: { status: "error", reason: "Logo search is unavailable. Draw a rectangle around your logo instead." },
+      }));
+    } finally {
+      // Unrelated draft edits can also make this result stale. Do not leave a
+      // spinner behind, or clear a newer request's checking state.
+      if (requestId === recognitionRequest.current) {
+        setLogoRecognition((previous) => {
+          if (previous[id]?.status !== "checking") return previous;
+          const next = { ...previous };
+          delete next[id];
+          return next;
+        });
+      }
+    }
+  }, [applying, image, selectedDraft, updateOptions]);
 
   const selectDraft = (id: string) => {
     recognitionRequest.current += 1;
@@ -1751,12 +1835,9 @@ export function QRRepairStudio({
                         <Checkbox
                           id="qr-preserve-logo"
                           checked={selectedDraft.options.preserveLogo}
-                          onCheckedChange={(checked) => updateOptions(
-                            selectedDraft.id,
-                            checked === true
-                              ? { preserveLogo: true }
-                              : { preserveLogo: false, replacementLogo: undefined },
-                          )}
+                          onCheckedChange={(checked) => {
+                            if (checked !== "indeterminate") void handleKeepLogo(checked);
+                          }}
                           disabled={applying}
                           className="border-slate-600 data-[state=checked]:border-fuchsia-300 data-[state=checked]:bg-fuchsia-500"
                         />
@@ -1765,7 +1846,7 @@ export function QRRepairStudio({
                         </label>
                       </div>
                       <p className="mt-1.5 text-[11px] leading-4 text-slate-400">
-                        One protected area per code. Draw the exact logo area; nothing is guessed.
+                        One protected area per code. We look for a supported logo and keep its original artwork. You can adjust the area.
                       </p>
                       <p className="mt-1 text-[11px] leading-4 text-amber-200/90">
                         If the code has multiple logos or artwork near its corners, review the rebuilt preview and safety check before applying.
@@ -1797,8 +1878,11 @@ export function QRRepairStudio({
                         />
                       ) : null}
                       {selectedDraft.options.preserveLogo && !selectedLogoRegionIsValid ? (
-                        <p className="mt-2 rounded-md border border-amber-400/25 bg-amber-950/20 px-2.5 py-2 text-[11px] leading-4 text-amber-200/90">
-                          Draw the logo area first. We do not invent a logo boundary.
+                        <p role="status" aria-live="polite" className="mt-2 rounded-md border border-amber-400/25 bg-amber-950/20 px-2.5 py-2 text-[11px] leading-4 text-amber-200/90">
+                          {selectedLogoRecognition?.status === "checking"
+                            ? "Looking for a logo…"
+                            : selectedLogoRecognition?.reason ||
+                              "No reliable logo area found. Draw a rectangle around your logo."}
                         </p>
                       ) : null}
                       {selectedDraft.options.preserveLogo && selectedLogoRegionIsValid ? (

@@ -940,6 +940,269 @@ async function assertLogoWidthInvalidatesApply(page, apply, label) {
   await setDisclosure(page, "Enter logo coordinates (%)", false);
 }
 
+async function unqueueDetectedDrafts(page) {
+  const detectedQueue = page.getByRole("checkbox", {
+    name: /Include QR code \d+ when applying fixes/i,
+  });
+  for (let index = 0; index < await detectedQueue.count(); index += 1) {
+    const checkbox = detectedQueue.nth(index);
+    if (await checkbox.isChecked()) await checkbox.uncheck();
+  }
+}
+
+async function addManualDraftFromFixture(page, fixture, label) {
+  await setDisclosure(page, "Show QR on artwork", true);
+  const art = page.getByRole("application", { name: /Artwork region selector/ }).first();
+  const box = await art.boundingBox();
+  assert.ok(box && box.width > 0 && box.height > 0, `${label}: artwork selector is not visible`);
+  const start = {
+    x: box.x + box.width * fixture.regions[0].x / ART_WIDTH,
+    y: box.y + box.height * fixture.regions[0].y / ART_HEIGHT,
+  };
+  const end = {
+    x: box.x + box.width * (fixture.regions[0].x + fixture.regions[0].width) / ART_WIDTH,
+    y: box.y + box.height * (fixture.regions[0].y + fixture.regions[0].height) / ART_HEIGHT,
+  };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 4 });
+  await page.mouse.up();
+
+  await setDisclosure(page, "Select a QR manually", true);
+  await setDisclosure(page, "Enter box coordinates instead", true);
+  for (const field of ["x", "y", "width", "height"]) {
+    await page.getByLabel(`Manual region ${field} in source pixels`).fill(
+      String(fixture.regions[0][field]),
+    );
+  }
+  await page.getByLabel("Manual recovery exact payload").fill(PAYLOAD);
+  await page.getByRole("button", {
+    name: "Add manual QR recovery candidate to repair queue",
+    exact: true,
+  }).click();
+  await page.getByRole("button", { name: "Edit manual recovery", exact: true }).waitFor();
+}
+
+async function logoSelectionStyle(page) {
+  const selector = page.getByRole("application", {
+    name: /Logo region selector\. Draw or redraw a rectangle around the logo\./i,
+  }).first();
+  const overlay = selector.locator('div[aria-hidden="true"]').last();
+  assert.equal(await overlay.count(), 1, "logo selection overlay is missing");
+  return overlay.getAttribute("style");
+}
+
+async function waitForLogoRecognition(page, brand) {
+  await page.getByText(
+    new RegExp(`^(?:Detected|Recognized) ${brand}\\.`),
+    { exact: false },
+  ).waitFor({ timeout: 30_000 });
+}
+
+async function runKeepOriginalLogoAutoLocateScenario(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  // Hold one real recognition call to exercise cancellation deterministically.
+  // Its actual pixel matcher still runs after release; no result is mocked.
+  await page.route(/\/src\/builders\/spot-uv\/lib\/popular-qr-logos\.ts(?:\?|$)/, async (route) => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const delayed = original.replace(
+      /(async function detectPopularQRLogo\([^)]*\)\s*\{)/,
+      "$1\nif (globalThis.__holdLogoSearch) { globalThis.__holdLogoSearch = false; await new Promise(resolve => { globalThis.__releaseLogoSearch = resolve; }); }",
+    );
+    assert.notEqual(delayed, original, "recognition test delay was not installed");
+    await route.fulfill({ response, body: delayed });
+  });
+  const serverQRRequests = [];
+  page.on("request", (request) => {
+    if (/\/api\/detect-qr(?:\?|$)/.test(request.url())) serverQRRequests.push(request.url());
+  });
+
+  try {
+    await page.goto(baseURL);
+    await page.locator("input[type=file]").setInputFiles(popularLogoFixture);
+    await page.getByRole("button", { name: /QR Repair Studio/ }).waitFor({ timeout: 30_000 });
+    const originalDownload = await downloadPrintPdf(page, "keep-original auto-locate before repair");
+    const originalDecoded = await decodeDownloadedPdf(
+      originalDownload,
+      "keep-original auto-locate before repair",
+    );
+    assert.ok(originalDecoded.payloads.includes(PAYLOAD), "known logo fixture did not decode before repair");
+
+    await waitForStableScan(page);
+    assert.deepEqual(serverQRRequests, [], "Keep original logo recognition must stay local");
+    await unqueueDetectedDrafts(page);
+    await addManualDraftFromFixture(page, popularLogoFixture, "known manual-logo draft");
+
+    const keepOriginal = page.getByRole("checkbox", { name: /Keep (?:my|original) logo/i });
+    assert.equal(await keepOriginal.isChecked(), false, "manual recovery starts without logo protection");
+    await page.evaluate(() => { globalThis.__holdLogoSearch = true; });
+    await keepOriginal.check();
+    await page.getByText(/^(?:Looking for a logo…|Checking the source logo…|Checking logo…)/, {
+      exact: false,
+    }).waitFor({ timeout: 30_000 });
+    await page.waitForFunction(() => typeof globalThis.__releaseLogoSearch === "function");
+    // Cancel this first pending request immediately, then switch code and
+    // close/reopen the studio. A late result must not mutate the deselected
+    // manual draft.
+    await keepOriginal.uncheck();
+    assert.equal(await keepOriginal.isChecked(), false, "Keep original logo did not turn off while pending");
+    await page.getByRole("button", { name: "Edit detected QR code 2", exact: true }).click();
+    await page.getByRole("button", { name: "Cancel QR repair studio", exact: true }).click();
+    await waitForStableScan(page);
+    // Closing cancels unsaved manual drafts. Recreate the same selection to
+    // ensure the old request cannot attach even to equivalent source bounds.
+    await unqueueDetectedDrafts(page);
+    await addManualDraftFromFixture(page, popularLogoFixture, "reopened manual-logo draft");
+    await page.evaluate(() => {
+      globalThis.__holdLogoSearch = false;
+      globalThis.__releaseLogoSearch();
+    });
+    assert.equal(await keepOriginal.isChecked(), false, "stale recognition applied after close/reopen");
+    assert.equal(
+      await page.getByText(/^(?:Detected|Recognized) Instagram\./, { exact: false }).count(),
+      0,
+      "stale recognition text survived deselection and close/reopen",
+    );
+    assert.equal(await page.getByText("Kept logo", { exact: true }).count(), 0,
+      "stale recognition drew a late logo region after deselection");
+
+    await keepOriginal.check();
+    await waitForLogoRecognition(page, "Instagram");
+    assert.equal(await keepOriginal.isChecked(), true, "Keep original logo did not stay checked");
+    assert.ok(await page.getByText("Kept logo", { exact: true }).count() >= 1,
+      "strong logo match did not draw a normalized protected area");
+    const replacement = page.getByRole("combobox", { name: "Logo replacement", exact: true });
+    assert.equal(await replacement.count(), 1, "strong logo match did not expose the replacement choice");
+    assert.match(await replacement.innerText(), /Keep original/i, "auto-locate must keep the original replacement");
+    assert.equal(
+      await page.getByRole("button", { name: "Apply verified QR repairs", exact: true }).isDisabled(),
+      true,
+      "auto-locate must not auto-preview or save a manual draft",
+    );
+    assert.equal(
+      await page.getByText(/Matches the original exactly|Payload matches exactly/, { exact: false }).count(),
+      0,
+      "auto-locate unexpectedly created a preview result",
+    );
+
+    // A user rectangle is authoritative. Turning protection off and on again
+    // must not replace that rectangle with a fresh automatic suggestion.
+    await drawLogoSelection(
+      page,
+      popularLogoFixture.logos[0],
+      popularLogoFixture.regions[0],
+      "known manual-logo override",
+      { x: 16, y: 8 },
+    );
+    const manualOverrideStyle = await logoSelectionStyle(page);
+    await keepOriginal.uncheck();
+    assert.equal(await keepOriginal.isChecked(), false, "Keep original logo did not turn off");
+    await keepOriginal.check();
+    assert.equal(await page.getByText("Looking for a logo…", { exact: true }).count(), 0,
+      "an existing manual rectangle should not trigger a new search");
+    assert.equal(
+      await logoSelectionStyle(page),
+      manualOverrideStyle,
+      "existing manual logo rectangle was overridden after Keep original off/on",
+    );
+
+    // Re-enable protection and use a deliberate exact rectangle for the
+    // applied preservation assertion. Replacement remains Keep original.
+    await drawLogoSelection(
+      page,
+      popularLogoFixture.logos[0],
+      popularLogoFixture.regions[0],
+      "known manual-logo final region",
+    );
+    assert.match(await replacement.innerText(), /Keep original/i);
+    await verifySelected(page);
+    const apply = page.getByRole("button", { name: "Apply verified QR repairs", exact: true });
+    assert.equal(await apply.isDisabled(), false, "manually previewed protected logo should enable Apply");
+    await apply.click();
+    await page.getByText("QR repairs applied", { exact: true }).waitFor({ timeout: 30_000 });
+    const repairedDownload = await downloadPrintPdf(page, "keep-original auto-locate after repair");
+    const repairedDecoded = await decodeDownloadedPdf(
+      repairedDownload,
+      "keep-original auto-locate after repair",
+    );
+    assert.ok(repairedDecoded.payloads.includes(PAYLOAD), "protected logo repair lost the QR payload");
+    // A curated glyph occupies only part of its white badge. Measure the
+    // original ink, not the outer badge rectangle used by solid-mark fixtures.
+    const originalInk = nearestLogoImage(
+      originalDownload, popularLogoFixture.logos[0], "original preserved glyph",
+    ).normalized;
+    assertLogoPdfPreserved(
+      originalDownload,
+      repairedDownload,
+      {
+        ...popularLogoFixture.logos[0],
+        x: originalInk.x * ART_WIDTH,
+        y: originalInk.y * ART_HEIGHT,
+        width: originalInk.width * ART_WIDTH,
+        height: originalInk.height * ART_HEIGHT,
+      },
+      "Keep original logo PDF preservation",
+    );
+
+    // An unknown square mark remains a manual fallback. Auto-locate may
+    // explain that no supported brand matched, but must not invent a region.
+    const unknownPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const unknownRequests = [];
+    unknownPage.on("request", (request) => {
+      if (/\/api\/detect-qr(?:\?|$)/.test(request.url())) unknownRequests.push(request.url());
+    });
+    try {
+      await unknownPage.goto(baseURL);
+      await unknownPage.locator("input[type=file]").setInputFiles(logoFixture);
+      await unknownPage.getByRole("button", { name: /QR Repair Studio/ }).waitFor({ timeout: 30_000 });
+      await waitForStableScan(unknownPage);
+      await unqueueDetectedDrafts(unknownPage);
+      await addManualDraftFromFixture(unknownPage, logoFixture, "unknown manual-logo draft");
+      const unknownKeep = unknownPage.getByRole("checkbox", { name: /Keep (?:my|original) logo/i });
+      await unknownKeep.check();
+      await unknownPage.getByText(
+        /^(?:No reliable logo area found|No logo match found|No supported brand found|Logo is uncertain)/,
+        { exact: false },
+      ).waitFor({ timeout: 30_000 });
+      assert.equal(
+        await unknownPage.getByRole("combobox", { name: "Logo replacement", exact: true }).count(),
+        0,
+        "unknown logo unexpectedly received a replacement choice without a region",
+      );
+      assert.equal(
+        await unknownPage.getByText("Kept logo", { exact: true }).count(),
+        0,
+        "unknown logo unexpectedly received an automatic region",
+      );
+      assert.equal(
+        await unknownPage.getByRole("application", { name: /Logo region selector/ }).count(),
+        1,
+        "unknown logo did not retain the manual rectangle fallback",
+      );
+      await drawLogoSelection(
+        unknownPage,
+        logoFixture.logos[0],
+        logoFixture.regions[0],
+        "unknown manual fallback",
+      );
+      assert.ok(
+        await unknownPage.getByText("Kept logo", { exact: true }).count() >= 1,
+        "unknown logo manual fallback did not accept the user rectangle",
+      );
+      assert.deepEqual(unknownRequests, [], "unknown logo recognition must stay local");
+    } finally {
+      await unknownPage.close();
+    }
+    assert.deepEqual(serverQRRequests, [], "Keep original logo scenario must not call server QR detection");
+    console.log(
+      "Keep original logo scenario: bounded auto-locate, preserve-original/manual preview, unknown fallback, stale invalidation, and PDF payload/logo preservation passed",
+    );
+  } finally {
+    await page.close();
+  }
+}
+
 async function runLogoPreservationScenario(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const serverQRRequests = [];
@@ -1469,6 +1732,7 @@ const browser = await chromium.launch({
 
 const failures = [];
 for (const [name, scenario] of [
+  ["Keep original logo auto-locate", runKeepOriginalLogoAutoLocateScenario],
   ["logo preservation", runLogoPreservationScenario],
   ["popular logo replacement", runPopularLogoScenario],
   ["detected QR repair", runRepairScenario],
