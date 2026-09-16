@@ -26,3 +26,9 @@ Contrast recommendations are warnings, not substitutes for real QR decoding.
 **Why:** The original 4.5:1 hard gate rejected readable brand colors and pressured customers to recolor their QR. That threshold is conservative guidance, not a universal QR requirement.
 
 **How to apply:** Allow chosen colors only when exact payload and output-size pixel verification pass. Warn about low print contrast; never silently recolor. Color edits invalidate earlier checks and should be shown as awaiting a new preview, not already failed.
+
+Protect customer-selected logo artwork wherever it appears, without automatically moving, shrinking, recoloring, or removing it.
+
+**Why:** Customers use center and corner branding. A readable replacement is not a successful repair if it loses that branding. Finder overlap alone does not prove an unchanged protected region is unreadable.
+
+**How to apply:** Preserve the selected pixels, including alpha, through the final source commit, not only the preview. Warn about corner overlap and rely on exact-content/output verification. Test saved logo appearance as well as QR decoding.

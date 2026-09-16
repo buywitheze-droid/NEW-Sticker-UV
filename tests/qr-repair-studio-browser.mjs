@@ -33,6 +33,9 @@ const ART_WIDTH = 1200;
 const ART_HEIGHT = 900;
 const DARK = "#111827";
 const LIGHT = "#fff7ed";
+const CENTER_LOGO_COLOR = "#ef476f";
+const CORNER_LOGO_COLOR = "#2a9d8f";
+const ADVANCED_OPTIONS_SUMMARY = /Advanced options: colors(?:, logo)? and scan settings/;
 
 function makeFixture() {
   const artwork = createCanvas(ART_WIDTH, ART_HEIGHT);
@@ -90,6 +93,109 @@ function makeFixture() {
 }
 
 const fixture = makeFixture();
+
+function makeLogoFixture() {
+  const artwork = createCanvas(ART_WIDTH, ART_HEIGHT);
+  const context = artwork.getContext("2d");
+  context.fillStyle = LIGHT;
+  context.fillRect(0, 0, ART_WIDTH, ART_HEIGHT);
+  context.fillStyle = "#d6c7b8";
+  context.fillRect(0, 0, 64, ART_HEIGHT);
+  context.fillRect(ART_WIDTH - 64, 0, 64, ART_HEIGHT);
+  context.fillStyle = "#e8d8c8";
+  context.fillRect(70, 70, 80, 80);
+  context.fillRect(ART_WIDTH - 150, ART_HEIGHT - 150, 80, 80);
+
+  const matrix = QRCode.create(PAYLOAD, { errorCorrectionLevel: "H" }).modules;
+  const moduleSize = 8;
+  const quietZone = 4;
+  const qrSize = matrix.size * moduleSize;
+  const totalSize = (matrix.size + quietZone * 2) * moduleSize;
+  // jsQR reports the finder-pattern-to-finder-pattern square, not the quiet
+  // zone. Keep the corner logo outside both the source finder pattern and the
+  // repair engine's centred finder-pattern projection.
+  const definitions = [
+    {
+      x: 100,
+      y: 250,
+      logo: {
+        x: Math.round((qrSize - 56) / 2),
+        y: Math.round((qrSize - 56) / 2),
+        width: 56,
+        height: 56,
+      },
+      color: CENTER_LOGO_COLOR,
+      accent: "#ffd166",
+    },
+    {
+      x: 740,
+      y: 250,
+      logo: { x: 96, y: 96, width: 40, height: 40 },
+      color: CORNER_LOGO_COLOR,
+      accent: "#f4a261",
+    },
+  ];
+  const regions = definitions.map(({ x, y }) => ({
+    x: x + quietZone * moduleSize,
+    y: y + quietZone * moduleSize,
+    width: qrSize,
+    height: qrSize,
+  }));
+  const logos = definitions.map(({ logo, color, accent }, index) => {
+    const region = regions[index];
+    const absolute = {
+      x: region.x + logo.x,
+      y: region.y + logo.y,
+      width: logo.width,
+      height: logo.height,
+    };
+    return { ...absolute, color, accent };
+  });
+
+  definitions.forEach(({ x, y, logo, color, accent }) => {
+    context.fillStyle = LIGHT;
+    context.fillRect(x, y, totalSize, totalSize);
+    context.fillStyle = DARK;
+    for (let row = 0; row < matrix.size; row += 1) {
+      for (let column = 0; column < matrix.size; column += 1) {
+        if (matrix.get(column, row)) {
+          context.fillRect(
+            x + (column + quietZone) * moduleSize,
+            y + (row + quietZone) * moduleSize,
+            moduleSize,
+            moduleSize,
+          );
+        }
+      }
+    }
+
+    // Use a two-colour, block-aligned mark rather than a synthetic white
+    // cutout. The exact solid-color bounds make the saved-PDF assertion prove
+    // both location and extent, while the mark remains a real logo overlay
+    // that exercises QR error correction.
+    const regionX = x + quietZone * moduleSize;
+    const regionY = y + quietZone * moduleSize;
+    context.fillStyle = color;
+    context.fillRect(regionX + logo.x, regionY + logo.y, logo.width, logo.height);
+    context.fillStyle = accent;
+    context.fillRect(
+      regionX + logo.x + Math.round(logo.width * 0.25),
+      regionY + logo.y + Math.round(logo.height * 0.25),
+      Math.round(logo.width * 0.5),
+      Math.round(logo.height * 0.5),
+    );
+  });
+
+  return {
+    name: "qr-repair-studio-logo-preservation.png",
+    mimeType: "image/png",
+    buffer: artwork.toBuffer("image/png"),
+    regions,
+    logos,
+  };
+}
+
+const logoFixture = makeLogoFixture();
 
 function makeManualFixture() {
   const artwork = createCanvas(ART_WIDTH, ART_HEIGHT);
@@ -244,6 +350,114 @@ function embeddedPdfImages(pdfBytes) {
     decoded.push({ width, height, data: rgba, objectId: image.id, maskId });
   }
   return decoded;
+}
+
+function rgbFromHex(hex) {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex);
+  assert.ok(match, `expected a six-digit logo color, got ${hex}`);
+  return [
+    Number.parseInt(match[1].slice(0, 2), 16),
+    Number.parseInt(match[1].slice(2, 4), 16),
+    Number.parseInt(match[1].slice(4, 6), 16),
+  ];
+}
+
+function colorBounds(raster, hex, tolerance = 0) {
+  const [red, green, blue] = rgbFromHex(hex);
+  let minX = raster.width;
+  let minY = raster.height;
+  let maxX = -1;
+  let maxY = -1;
+  let count = 0;
+  for (let y = 0; y < raster.height; y += 1) {
+    for (let x = 0; x < raster.width; x += 1) {
+      const index = (y * raster.width + x) * 4;
+      if (
+        Math.abs(raster.data[index] - red) <= tolerance &&
+        Math.abs(raster.data[index + 1] - green) <= tolerance &&
+        Math.abs(raster.data[index + 2] - blue) <= tolerance
+      ) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        count += 1;
+      }
+    }
+  }
+  return maxX < 0
+    ? undefined
+    : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1, count };
+}
+
+function normalizedBounds(bounds, raster) {
+  return {
+    x: bounds.x / raster.width,
+    y: bounds.y / raster.height,
+    width: bounds.width / raster.width,
+    height: bounds.height / raster.height,
+  };
+}
+
+function nearestLogoImage(pdfBytes, logo, label) {
+  const expected = {
+    x: (logo.x + logo.width / 2) / ART_WIDTH,
+    y: (logo.y + logo.height / 2) / ART_HEIGHT,
+  };
+  const candidates = embeddedPdfImages(pdfBytes)
+    .map((image) => {
+      const bounds = colorBounds(image, logo.color, 2);
+      if (!bounds) return undefined;
+      const normalized = normalizedBounds(bounds, image);
+      return {
+        image,
+        bounds,
+        normalized,
+        distance: Math.hypot(
+          normalized.x + normalized.width / 2 - expected.x,
+          normalized.y + normalized.height / 2 - expected.y,
+        ),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.distance - right.distance);
+  assert.ok(candidates.length, `${label}: PDF has no pixels for ${logo.color} logo`);
+  const candidate = candidates[0];
+  assert.ok(
+    candidate.distance < 0.08,
+    `${label}: ${logo.color} logo was found at an unexpected PDF location`,
+  );
+  return candidate;
+}
+
+function assertLogoPdfPreserved(beforePdf, afterPdf, logo, label) {
+  const before = nearestLogoImage(beforePdf, logo, `${label} before Apply`);
+  const after = nearestLogoImage(afterPdf, logo, `${label} after Apply`);
+  const expected = {
+    x: logo.x / ART_WIDTH,
+    y: logo.y / ART_HEIGHT,
+    width: logo.width / ART_WIDTH,
+    height: logo.height / ART_HEIGHT,
+  };
+  for (const [edge, tolerance] of [
+    ["x", 0.025],
+    ["y", 0.025],
+    ["width", 0.025],
+    ["height", 0.025],
+  ]) {
+    assert.ok(
+      Math.abs(after.normalized[edge] - expected[edge]) <= tolerance,
+      `${label}: preserved ${logo.color} logo ${edge} moved or changed extent`,
+    );
+    assert.ok(
+      Math.abs(after.normalized[edge] - before.normalized[edge]) <= tolerance,
+      `${label}: preserved ${logo.color} logo ${edge} differs from original PDF`,
+    );
+  }
+  assert.ok(
+    after.bounds.count >= before.bounds.count * 0.8,
+    `${label}: preserved ${logo.color} logo lost too many source pixels`,
+  );
 }
 
 function decodeRaster(raster) {
@@ -401,7 +615,7 @@ async function setDisclosure(page, summaryText, open) {
 
 async function assertSimpleModal(page, viewportLabel) {
   const advanced = page.locator("summary").filter({
-    hasText: "Advanced options: colors, logo and scan settings",
+    hasText: ADVANCED_OPTIONS_SUMMARY,
   }).first().locator("xpath=..");
   assert.equal(await advanced.count(), 1, `${viewportLabel}: Advanced disclosure is missing`);
   assert.equal(
@@ -477,6 +691,207 @@ async function verifySelected(page) {
     .waitFor({ timeout: 30_000 });
 }
 
+async function drawLogoSelection(page, logo, region, label, offsets = {}) {
+  const selector = page.getByRole("application", {
+    name: /Logo region selector\. Draw or redraw a rectangle around the logo\./i,
+  }).first();
+  assert.equal(await selector.count(), 1, `${label}: logo region selector is missing`);
+  assert.equal(await selector.isVisible(), true, `${label}: logo region selector is not visible`);
+  // The QR detector can include a quiet zone (or return a slightly different
+  // corner box) than the fixture's nominal module square. Scroll the nested
+  // modal before reading geometry, then derive the drag from the actual logo
+  // pixels in the cropped canvas rather than assuming either convention.
+  await selector.scrollIntoViewIfNeeded();
+  const crop = selector.locator('canvas[aria-label="Cropped QR artwork for logo selection"]');
+  assert.equal(await crop.count(), 1, `${label}: cropped QR canvas is missing`);
+  const cropBox = await crop.boundingBox();
+  assert.ok(cropBox && cropBox.width > 0 && cropBox.height > 0, `${label}: logo crop has no drawable area`);
+  const viewport = page.viewportSize();
+  assert.ok(
+    viewport &&
+      cropBox.x >= 0 &&
+      cropBox.y >= 0 &&
+      cropBox.x + cropBox.width <= viewport.width &&
+      cropBox.y + cropBox.height <= viewport.height,
+    `${label}: logo crop was not scrolled fully into the viewport`,
+  );
+  const actualLogo = await crop.evaluate((canvas, hex) => {
+    const match = /^#([0-9a-f]{6})$/i.exec(hex);
+    if (!match) return undefined;
+    const [red, green, blue] = [
+      Number.parseInt(match[1].slice(0, 2), 16),
+      Number.parseInt(match[1].slice(2, 4), 16),
+      Number.parseInt(match[1].slice(4, 6), 16),
+    ];
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return undefined;
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let minX = canvas.width;
+    let minY = canvas.height;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < canvas.height; y += 1) {
+      for (let x = 0; x < canvas.width; x += 1) {
+        const index = (y * canvas.width + x) * 4;
+        if (
+          Math.abs(data[index] - red) <= 2 &&
+          Math.abs(data[index + 1] - green) <= 2 &&
+          Math.abs(data[index + 2] - blue) <= 2
+        ) {
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+    return maxX < 0
+      ? undefined
+      : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+  }, logo.color);
+  assert.ok(actualLogo, `${label}: ${logo.color} pixels are absent from the cropped QR canvas`);
+
+  // `region` documents the fixture's source geometry and scales the redraw
+  // offset; actualLogo above is authoritative when quiet-zone padding exists.
+  const offsetX = (offsets.x || 0) * cropBox.width / region.width;
+  const offsetY = (offsets.y || 0) * cropBox.height / region.height;
+  const start = {
+    x: cropBox.x + cropBox.width * actualLogo.x / (await crop.evaluate((canvas) => canvas.width)) + offsetX,
+    y: cropBox.y + cropBox.height * actualLogo.y / (await crop.evaluate((canvas) => canvas.height)) + offsetY,
+  };
+  const end = {
+    x: start.x + cropBox.width * actualLogo.width / (await crop.evaluate((canvas) => canvas.width)),
+    y: start.y + cropBox.height * actualLogo.height / (await crop.evaluate((canvas) => canvas.height)),
+  };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 5 });
+  await page.mouse.up();
+  await page.getByText("Kept logo", { exact: true }).last().waitFor();
+}
+
+async function assertKeepLogoControl(page, label) {
+  const keepLogo = page.getByRole("checkbox", { name: "Keep my logo", exact: true });
+  assert.equal(await keepLogo.count(), 1, `${label}: Keep my logo control is missing`);
+  assert.equal(await keepLogo.isVisible(), true, `${label}: Keep my logo must be visible outside Advanced`);
+  const advanced = page.locator("summary").filter({ hasText: ADVANCED_OPTIONS_SUMMARY })
+    .first().locator("xpath=..");
+  assert.equal(await advanced.evaluate((element) => element.open), false,
+    `${label}: Advanced options should remain collapsed while selecting a logo`);
+  return keepLogo;
+}
+
+async function assertLogoWidthInvalidatesApply(page, apply, label) {
+  const numericFields = page.locator('input[type="number"]:visible');
+  const descriptors = await numericFields.evaluateAll((elements) => elements.map((element) => {
+    const input = element;
+    const labels = input.labels ? [...input.labels].map((label) => label.textContent || "") : [];
+    return [
+      input.getAttribute("aria-label") || "",
+      input.id || "",
+      ...labels,
+    ].join(" ");
+  }));
+  const widthIndex = descriptors.findIndex((text) => /(?:logo|protected).*width|width.*(?:logo|protected)/i.test(text));
+  assert.notEqual(
+    widthIndex,
+    -1,
+    `${label}: visible numeric logo width percentage field is missing`,
+  );
+  const widthField = numericFields.nth(widthIndex);
+  assert.equal(await widthField.isVisible(), true, `${label}: logo width field is not visible`);
+  const validValue = await widthField.inputValue();
+  await widthField.fill("101");
+  assert.equal(
+    await apply.isDisabled(),
+    true,
+    `${label}: an out-of-bounds logo width must invalidate Apply`,
+  );
+  await widthField.fill(validValue);
+}
+
+async function runLogoPreservationScenario(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const serverQRRequests = [];
+  page.on("request", (request) => {
+    if (/\/api\/detect-qr(?:\?|$)/.test(request.url())) serverQRRequests.push(request.url());
+  });
+
+  try {
+    await page.goto(baseURL);
+    await page.locator("input[type=file]").setInputFiles(logoFixture);
+    await page.getByRole("button", { name: /QR Repair Studio/ }).waitFor({ timeout: 30_000 });
+
+    const originalDownload = await downloadPrintPdf(page, "logo fixture before repair");
+    const originalDecoded = await decodeDownloadedPdf(originalDownload, "logo fixture before repair");
+    assert.ok(originalDecoded.payloads.includes(PAYLOAD), "logo fixture before repair did not decode the QR payload");
+    for (const logo of logoFixture.logos) {
+      nearestLogoImage(originalDownload, logo, "logo fixture before repair");
+    }
+
+    await waitForStableScan(page);
+    assert.deepEqual(serverQRRequests, [], "logo preservation must use local QR detection");
+    await assertSimpleModal(page, "logo preservation");
+
+    // The center-logo QR proves the compact, top-level toggle and the real
+    // cropped-QR drag path. A second drag must invalidate a prior preview.
+    const firstKeepLogo = await assertKeepLogoControl(page, "center logo");
+    await firstKeepLogo.check();
+    await drawLogoSelection(page, logoFixture.logos[0], logoFixture.regions[0], "center logo");
+    await verifySelected(page);
+    const apply = page.getByRole("button", { name: "Apply verified QR repairs", exact: true });
+    assert.equal(await apply.isDisabled(), false, "verified center-logo repair should enable Apply");
+    await assertLogoWidthInvalidatesApply(page, apply, "center logo");
+
+    const centerLogo = logoFixture.logos[0];
+    const centerRegion = logoFixture.regions[0];
+    await drawLogoSelection(
+      page,
+      centerLogo,
+      centerRegion,
+      "center-logo redraw",
+      { x: 16, y: 8 },
+    );
+    assert.equal(await apply.isDisabled(), true, "redrawing the logo region must invalidate Apply");
+    await drawLogoSelection(page, centerLogo, centerRegion, "center-logo final selection");
+    await verifySelected(page);
+    await page.setViewportSize({ width: 320, height: 740 });
+    const logoSelector = page.getByRole("application", { name: /Logo region selector/ });
+    await logoSelector.scrollIntoViewIfNeeded();
+    for (const name of ["Preview fix and verify QR repair", "Cancel QR repair studio", "Apply verified QR repairs"]) {
+      const bounds = await page.getByRole("button", { name, exact: true }).boundingBox();
+      assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 &&
+        bounds.x + bounds.width <= 320 && bounds.y + bounds.height <= 740,
+      `320px mobile action is clipped: ${name} ${JSON.stringify(bounds)}`);
+    }
+    await page.screenshot({ path: "/tmp/qr-logo-mobile.png" });
+    await page.setViewportSize({ width: 1280, height: 900 });
+
+    // Exercise the same interaction on a noncentral logo. Its rectangle is
+    // adjacent to (but does not overlap) any finder pattern, so preserving it
+    // proves that the UI is not secretly restricted to a centered logo.
+    await page.getByRole("checkbox", { name: /QR code 2/i }).check();
+    await page.getByRole("button", { name: "Edit detected QR code 2", exact: true }).click();
+    const secondKeepLogo = await assertKeepLogoControl(page, "corner logo");
+    await secondKeepLogo.check();
+    await drawLogoSelection(page, logoFixture.logos[1], logoFixture.regions[1], "corner logo");
+    await verifySelected(page);
+    assert.equal(await apply.isDisabled(), false, "verified corner-logo repair should enable Apply");
+    await page.screenshot({ path: "/tmp/qr-logo-desktop.png" });
+
+    await apply.click();
+    await page.getByText("QR repairs applied", { exact: true }).waitFor({ timeout: 30_000 });
+    const repairedDownload = await downloadPrintPdf(page, "logo fixture after repair");
+    const repairedDecoded = await decodeDownloadedPdf(repairedDownload, "logo fixture after repair");
+    assert.ok(repairedDecoded.payloads.includes(PAYLOAD), "logo repair PDF did not decode the QR payload");
+    assertLogoPdfPreserved(originalDownload, repairedDownload, logoFixture.logos[0], "center logo");
+    assertLogoPdfPreserved(originalDownload, repairedDownload, logoFixture.logos[1], "corner logo");
+    console.log("logo preservation scenario: top-level toggle, cropped-QR draw/redraw invalidation, two logo positions, and PDF pixels passed");
+  } finally {
+    await page.close();
+  }
+}
+
 async function runRepairScenario(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const serverQRRequests = [];
@@ -518,7 +933,7 @@ async function runRepairScenario(browser) {
 
     // Color, ECC, and quiet-zone behavior remain covered, but are deliberately
     // exercised only after opening the technical options disclosure.
-    await setDisclosure(page, "Advanced options: colors, logo and scan settings", true);
+    await setDisclosure(page, ADVANCED_OPTIONS_SUMMARY, true);
     await assertPayloadReadOnly(page);
 
     // Color edits need a fresh scan, not a false failure from a contrast rule.
@@ -755,6 +1170,7 @@ const browser = await chromium.launch({
 
 const failures = [];
 for (const [name, scenario] of [
+  ["logo preservation", runLogoPreservationScenario],
   ["detected QR repair", runRepairScenario],
   ["manual recovery", runManualRecoveryScenario],
   ["scan status", runScanStatusScenario],

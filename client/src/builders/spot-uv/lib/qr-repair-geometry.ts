@@ -23,6 +23,18 @@ export function scaleQRRepairDrafts(
     const right = Math.min(targetWidth, Math.round((r.x + r.width) * targetWidth / sourceWidth));
     const bottom = Math.min(targetHeight, Math.round((r.y + r.height) * targetHeight / sourceHeight));
     if (right <= x || bottom <= y) throw new Error("The QR region is too small at the output size.");
-    return { ...draft, region: { x, y, width: right - x, height: bottom - y }, options: { ...draft.options } };
+    return {
+      ...draft,
+      region: { x, y, width: right - x, height: bottom - y },
+      options: {
+        ...draft.options,
+        // Logo coordinates are normalized to the QR region. They must not be
+        // scaled as source pixels or they would drift when the print source
+        // is rebuilt at a different raster size.
+        ...(draft.options.logoRegion
+          ? { logoRegion: { ...draft.options.logoRegion } }
+          : {}),
+      },
+    };
   });
 }

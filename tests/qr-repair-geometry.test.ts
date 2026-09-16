@@ -8,7 +8,8 @@ const draft: QRRepairDraft = {
   region: { x: 113, y: 57, width: 201, height: 201 },
   originalPayload: "https://example.com",
   options: { payload: "https://example.com", dark: "#123456", light: "#ffffff",
-    errorCorrectionLevel: "H", quietZone: 4, preserveLogo: false, logoScale: 0.18 },
+    errorCorrectionLevel: "H", quietZone: 4, preserveLogo: false, logoScale: 0.18,
+    logoRegion: { x: 0.2, y: 0.15, width: 0.3, height: 0.2 } },
 };
 
 test("QR print mapping rounds edges without changing source settings or payload", () => {
@@ -16,6 +17,7 @@ test("QR print mapping rounds edges without changing source settings or payload"
   const [mapped] = scaleQRRepairDrafts([draft], 1000, 700, 900, 630);
   assert.deepEqual(mapped.region, { x: 102, y: 51, width: 181, height: 181 });
   assert.equal(mapped.originalPayload, draft.originalPayload);
+  assert.deepEqual(mapped.options.logoRegion, draft.options.logoRegion);
   assert.equal(JSON.stringify(draft), before);
 });
 

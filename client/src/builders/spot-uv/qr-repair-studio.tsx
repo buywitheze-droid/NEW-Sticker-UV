@@ -12,6 +12,7 @@ import type {
   QRRepairRegion,
   QRRepairResult,
 } from "./lib/qr-repair-types";
+import { LogoRegionSelector, type LogoRegion } from "./logo-region-selector";
 import {
   Dialog,
   DialogContent,
@@ -30,7 +31,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import {
   Check,
@@ -87,6 +87,7 @@ type ArtContentRect = {
   width: number;
   height: number;
 };
+type StudioRepairOptions = QRRepairOptions & { logoRegion?: LogoRegion };
 
 const DEFAULT_DARK = "#111827";
 const DEFAULT_LIGHT = "#ffffff";
@@ -204,12 +205,34 @@ function qrId(code: DetectedQR) {
 }
 
 function draftSignature(draft: QRRepairDraft) {
+  const options = draft.options as StudioRepairOptions;
   return JSON.stringify({
     id: draft.id,
     region: draft.region,
-    options: draft.options,
+    options: {
+      ...draft.options,
+      // Keep this explicit so a selected logo rectangle is always part of the
+      // tested identity, including when older drafts omit the optional field.
+      logoRegion: options.logoRegion ?? null,
+    },
     originalPayload: draft.originalPayload,
   });
+}
+
+function draftLogoRegion(options: QRRepairOptions): LogoRegion | undefined {
+  return (options as StudioRepairOptions).logoRegion;
+}
+
+function validLogoRegion(region: LogoRegion | undefined) {
+  if (!region) return false;
+  const values = [region.x, region.y, region.width, region.height];
+  return values.every(Number.isFinite) &&
+    region.x >= 0 &&
+    region.y >= 0 &&
+    region.width > 0 &&
+    region.height > 0 &&
+    region.x + region.width <= 1 &&
+    region.y + region.height <= 1;
 }
 
 function isManualDraft(draft: QRRepairDraft) {
@@ -395,6 +418,7 @@ export function QRRepairStudio({
   const [sampleError, setSampleError] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
+  const [logoCropUnavailableId, setLogoCropUnavailableId] = useState<string | null>(null);
   const [manualRegion, setManualRegion] = useState<QRRepairRegion>(INITIAL_MANUAL_REGION);
   const [manualPayload, setManualPayload] = useState("");
   const [unsafeDetectionCount, setUnsafeDetectionCount] = useState(0);
@@ -524,6 +548,7 @@ export function QRRepairStudio({
     setTested({});
     setError(null);
     setSampleError(seeded.nextSampleError);
+    setLogoCropUnavailableId(null);
     setSelectedId(firstId);
     setQueueIds(firstId ? new Set([firstId]) : new Set());
     setManualRegion(INITIAL_MANUAL_REGION);
@@ -677,6 +702,25 @@ export function QRRepairStudio({
       ? tested[selectedId]
       : undefined
     : undefined;
+  const handleLogoCropAvailability = useCallback(
+    (available: boolean) => {
+      if (!selectedDraft) return;
+      if (!available) {
+        setTested((previous) => {
+          if (!previous[selectedDraft.id]) return previous;
+          const next = { ...previous };
+          delete next[selectedDraft.id];
+          return next;
+        });
+      }
+      setLogoCropUnavailableId((current) => (
+        available
+          ? current === selectedDraft.id ? null : current
+          : selectedDraft.id
+      ));
+    },
+    [selectedDraft?.id],
+  );
 
   const updateDraft = useCallback(
     (id: string, update: (draft: QRRepairDraft) => QRRepairDraft) => {
@@ -702,7 +746,7 @@ export function QRRepairStudio({
   );
 
   const updateOptions = useCallback(
-    (id: string, update: Partial<QRRepairOptions>) => {
+    (id: string, update: Partial<QRRepairOptions> & { logoRegion?: LogoRegion }) => {
       updateDraft(id, (draft) => ({
         ...draft,
         options: { ...draft.options, ...update },
@@ -768,6 +812,21 @@ export function QRRepairStudio({
     }
     if (!validRegion(selectedDraft.region)) {
       setError("Select a non-empty QR region before verifying this draft.");
+      return;
+    }
+    if (selectedDraft.options.preserveLogo) {
+      const logoRegion = draftLogoRegion(selectedDraft.options);
+      if (!validLogoRegion(logoRegion)) {
+        setError(
+          logoRegion
+            ? "Logo coordinates must stay inside the QR crop before previewing."
+            : "Keep my logo is on. Draw a logo rectangle in the QR crop before previewing.",
+        );
+        return;
+      }
+    }
+    if (selectedDraft.options.preserveLogo && logoCropUnavailableId === selectedDraft.id) {
+      setError("The selected logo crop could not be rendered. Choose another QR region or try again before previewing.");
       return;
     }
     if (
@@ -915,6 +974,20 @@ export function QRRepairStudio({
       if (!draft.options.payload.trim()) {
         return { ready: false, reason: `${draft.id.startsWith("manual-") ? "Manual" : "Detected"} payload is empty.` };
       }
+      if (draft.options.preserveLogo) {
+        const logoRegion = draftLogoRegion(draft.options);
+        if (!validLogoRegion(logoRegion)) {
+          return {
+            ready: false,
+            reason: logoRegion
+              ? "Logo coordinates must stay inside the QR crop before previewing or applying."
+              : "Keep my logo is on; draw a logo rectangle before previewing or applying.",
+          };
+        }
+      }
+      if (draft.options.preserveLogo && logoCropUnavailableId === draft.id) {
+        return { ready: false, reason: "The selected logo crop could not be rendered; preview it again before applying." };
+      }
       const check = tested[draft.id];
       if (!check || check.signature !== draftSignature(draft)) {
         return { ready: false, reason: "Settings changed or not checked yet. Click Preview fix for each selected code." };
@@ -930,7 +1003,7 @@ export function QRRepairStudio({
       }
     }
     return { ready: true, reason: "All queued drafts are digitally and final-size verified." };
-  }, [printScale, printScaleY, queueDrafts, tested]);
+  }, [logoCropUnavailableId, printScale, printScaleY, queueDrafts, tested]);
 
   const handleApply = async () => {
     if (!applyReadiness.ready || applying) return;
@@ -952,6 +1025,8 @@ export function QRRepairStudio({
 
   const displayedArtCodes = qrCodes;
   const selectedRegion = selectedDraft?.region ?? manualRegion;
+  const selectedLogoRegion = selectedDraft ? draftLogoRegion(selectedDraft.options) : undefined;
+  const selectedLogoRegionIsValid = validLogoRegion(selectedLogoRegion);
   const selectedOriginalColors = selectedDraft ? sampledColors[selectedDraft.id] : undefined;
   const manualRegionIsValid = validRegion(manualRegion);
   const scanBusy = scanStatus.state === "scanning";
@@ -1143,6 +1218,22 @@ export function QRRepairStudio({
                         aria-hidden="true"
                       />
                     )}
+                    {selectedDraft?.options.preserveLogo && selectedLogoRegionIsValid ? (
+                      <div
+                        className="absolute rounded border-2 border-fuchsia-300 bg-fuchsia-300/20 shadow-[0_0_0_1px_rgba(232,121,249,0.35)]"
+                        style={{
+                          left: `${((selectedDraft.region.x + selectedLogoRegion!.x * selectedDraft.region.width) / Math.max(1, dimensions.width)) * 100}%`,
+                          top: `${((selectedDraft.region.y + selectedLogoRegion!.y * selectedDraft.region.height) / Math.max(1, dimensions.height)) * 100}%`,
+                          width: `${((selectedLogoRegion!.width * selectedDraft.region.width) / Math.max(1, dimensions.width)) * 100}%`,
+                          height: `${((selectedLogoRegion!.height * selectedDraft.region.height) / Math.max(1, dimensions.height)) * 100}%`,
+                        }}
+                        aria-label="Selected logo source region"
+                      >
+                        <span className="absolute -top-5 left-0 rounded bg-slate-950/90 px-1.5 py-0.5 text-[10px] font-medium text-fuchsia-100">
+                          Kept logo
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="pointer-events-none absolute bottom-2 left-2 flex items-center gap-1.5 rounded bg-slate-950/85 px-2 py-1 text-[10px] text-slate-300">
                     <MousePointer2 className="h-3 w-3 text-fuchsia-300" aria-hidden="true" /> Draw a box only when selecting manually
@@ -1266,8 +1357,36 @@ export function QRRepairStudio({
 
                     <p className="text-center text-[11px] text-slate-500">Original colors stay on by default.</p>
 
+                    <div className="rounded-lg border border-fuchsia-400/25 bg-fuchsia-950/10 p-2.5">
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id="qr-preserve-logo"
+                          checked={selectedDraft.options.preserveLogo}
+                          onCheckedChange={(checked) => updateOptions(selectedDraft.id, { preserveLogo: checked === true })}
+                          disabled={applying}
+                          className="border-slate-600 data-[state=checked]:border-fuchsia-300 data-[state=checked]:bg-fuchsia-500"
+                        />
+                        <label htmlFor="qr-preserve-logo" className="text-xs font-medium text-slate-200">
+                          Keep my logo
+                        </label>
+                      </div>
+                      <p className="mt-1.5 text-[11px] leading-4 text-slate-400">
+                        Keep the logo from its exact source location and size. Draw a rectangle below; nothing is guessed.
+                      </p>
+                      {selectedDraft.options.preserveLogo ? (
+                        <LogoRegionSelector
+                          image={image}
+                          draftRegion={selectedDraft.region}
+                          value={selectedLogoRegion}
+                          onChange={(logoRegion) => updateOptions(selectedDraft.id, { logoRegion })}
+                          onAvailabilityChange={handleLogoCropAvailability}
+                          disabled={applying}
+                        />
+                      ) : null}
+                    </div>
+
                     <details className="rounded-lg border border-slate-800 bg-slate-950/25 p-3">
-                      <summary className="cursor-pointer text-xs font-medium text-slate-300">Advanced options: colors, logo and scan settings</summary>
+                      <summary className="cursor-pointer text-xs font-medium text-slate-300">Advanced options: colors and scan settings</summary>
                       <div className="mt-3 space-y-3">
                     {!isManualDraft(selectedDraft) && (
                       <div>
@@ -1397,42 +1516,6 @@ export function QRRepairStudio({
                       <div className="flex justify-between text-[10px] text-slate-600"><span>4</span><span>8</span></div>
                     </div>
 
-                    <div className="rounded-lg border border-slate-800 bg-slate-950/45 p-2.5">
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          id="qr-preserve-logo"
-                          checked={selectedDraft.options.preserveLogo}
-                          onCheckedChange={(checked) => updateOptions(selectedDraft.id, { preserveLogo: checked === true })}
-                          disabled={applying}
-                          className="border-slate-600 data-[state=checked]:border-sky-400 data-[state=checked]:bg-sky-500"
-                        />
-                        <label htmlFor="qr-preserve-logo" className="text-xs font-medium text-slate-300">Preserve center logo</label>
-                      </div>
-                      {selectedDraft.options.preserveLogo ? (
-                        <>
-                          <div className="mt-3 flex items-center justify-between gap-2">
-                            <label htmlFor="qr-logo-size" className="text-[11px] text-slate-400">Logo size</label>
-                            <span className="text-[11px] font-medium text-sky-200">{Math.round(selectedDraft.options.logoScale * 100)}%</span>
-                          </div>
-                          <Slider
-                            id="qr-logo-size"
-                            min={0.1}
-                            max={0.25}
-                            step={0.01}
-                            value={[selectedDraft.options.logoScale]}
-                            onValueChange={([value]) => updateOptions(selectedDraft.id, { logoScale: value })}
-                            disabled={applying}
-                            aria-label="Center logo size from 10 to 25 percent"
-                            className="mt-2"
-                          />
-                          <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-amber-200/80">
-                            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                            A center logo removes modules and can reduce scanability. Higher ECC is recommended.
-                          </p>
-                        </>
-                      ) : null}
-                    </div>
-
                       </div>
                     </details>
                   </div>
@@ -1512,7 +1595,7 @@ export function QRRepairStudio({
           </div>
         </div>
 
-        <DialogFooter className="shrink-0 flex-row flex-wrap items-center justify-between gap-3 border-t border-slate-800 bg-[#0d1830] px-5 py-3">
+        <DialogFooter className="shrink-0 flex-row flex-wrap items-center justify-between gap-2 border-t border-slate-800 bg-[#0d1830] px-3 py-2 sm:gap-3 sm:px-5 sm:py-3">
           <div className={`min-w-0 flex-1 text-xs ${error || sampleError ? "max-sm:basis-full" : "max-sm:sr-only"}`} aria-live="polite">
             {error ? (
               <p className="flex items-start gap-1.5 text-rose-300"><ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" /> <span>{error}</span></p>
@@ -1522,10 +1605,10 @@ export function QRRepairStudio({
                 <p className="truncate text-slate-500" title={applyReadiness.reason}>{applyReadiness.ready ? "Ready to apply the verified fix." : applyReadiness.reason.replaceAll("queued", "selected")}</p>
             )}
           </div>
-          <div className="flex shrink-0 gap-2">
+          <div className="flex w-full min-w-0 flex-wrap justify-end gap-2 sm:w-auto sm:shrink-0">
             <Button
               type="button"
-              className="bg-sky-500 text-slate-950 hover:bg-sky-400"
+              className="min-w-0 max-sm:flex-1 max-sm:gap-1 max-sm:px-1 max-sm:text-[11px] bg-sky-500 text-slate-950 hover:bg-sky-400"
               onClick={handleVerify}
               disabled={!selectedDraft || applying || verifyingId !== null}
               aria-label="Preview fix and verify QR repair"
@@ -1536,7 +1619,7 @@ export function QRRepairStudio({
             <Button
               type="button"
               variant="outline"
-              className="border-slate-700 bg-slate-900/60 text-slate-200 hover:bg-slate-800 hover:text-white"
+              className="min-w-0 max-sm:flex-1 max-sm:gap-1 max-sm:px-1 max-sm:text-[11px] border-slate-700 bg-slate-900/60 text-slate-200 hover:bg-slate-800 hover:text-white"
               onClick={() => onOpenChange(false)}
               disabled={applying}
               aria-label="Cancel QR repair studio"
@@ -1545,7 +1628,7 @@ export function QRRepairStudio({
             </Button>
             <Button
               type="button"
-              className="bg-emerald-500 text-slate-950 hover:bg-emerald-400"
+              className="min-w-0 max-sm:flex-1 max-sm:gap-1 max-sm:px-1 max-sm:text-[11px] bg-emerald-500 text-slate-950 hover:bg-emerald-400"
               onClick={handleApply}
               disabled={applying || !applyReadiness.ready}
               aria-label="Apply verified QR repairs"

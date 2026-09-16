@@ -2,6 +2,7 @@ import QRCode from "qrcode";
 import jsQR from "jsqr";
 import type {
   QRRepairDraft,
+  QRRepairLogoRegion,
   QRRepairOptions,
   QRRepairRegion,
   QRRepairResult,
@@ -11,6 +12,7 @@ import type {
 
 export type {
   QRRepairDraft,
+  QRRepairLogoRegion,
   QRRepairOptions,
   QRRepairRegion,
   QRRepairResult,
@@ -81,6 +83,36 @@ function assertRegion(
     throw new Error("QR repair region exceeds the supported patch size");
   }
   return { x: region.x, y: region.y, width: region.width, height: region.height };
+}
+
+function assertLogoRegion(logoRegion: QRRepairLogoRegion): QRRepairLogoRegion {
+  if (!logoRegion || typeof logoRegion !== "object") {
+    throw new Error("QR repair logo region is missing");
+  }
+  const values = [logoRegion.x, logoRegion.y, logoRegion.width, logoRegion.height];
+  if (!values.every(Number.isFinite)) {
+    throw new Error("QR repair logo region must contain finite normalized coordinates");
+  }
+  if (
+    logoRegion.x < 0 ||
+    logoRegion.y < 0 ||
+    logoRegion.width <= 0 ||
+    logoRegion.height <= 0 ||
+    logoRegion.x > 1 ||
+    logoRegion.y > 1 ||
+    logoRegion.width > 1 ||
+    logoRegion.height > 1 ||
+    logoRegion.x + logoRegion.width > 1 ||
+    logoRegion.y + logoRegion.height > 1
+  ) {
+    throw new Error("QR repair logo region must be a nonzero rectangle within normalized bounds 0 through 1");
+  }
+  return {
+    x: logoRegion.x,
+    y: logoRegion.y,
+    width: logoRegion.width,
+    height: logoRegion.height,
+  };
 }
 
 function createCanvas(width: number, height: number): HTMLCanvasElement {
@@ -387,6 +419,7 @@ function validateOptions(options: QRRepairOptions): {
   quietZone: number;
   preserveLogo: boolean;
   logoScale: number;
+  logoRegion?: QRRepairLogoRegion;
 } {
   if (!options || typeof options !== "object") throw new Error("QR repair options are missing");
   if (typeof options.payload !== "string" || options.payload.length === 0) {
@@ -411,6 +444,9 @@ function validateOptions(options: QRRepairOptions): {
   if (!Number.isFinite(logoScale) || logoScale < 0.1 || logoScale > 0.25) {
     throw new Error("QR repair logoScale must be between 0.1 and 0.25");
   }
+  const logoRegion = options.logoRegion === undefined
+    ? undefined
+    : assertLogoRegion(options.logoRegion);
   return {
     payload: options.payload,
     dark: options.dark,
@@ -419,6 +455,7 @@ function validateOptions(options: QRRepairOptions): {
     quietZone,
     preserveLogo,
     logoScale,
+    ...(logoRegion ? { logoRegion } : {}),
   };
 }
 
@@ -511,12 +548,93 @@ function warningForVerification(
   expectedPayload: string,
   ratio: number,
   pixelsPerModule: number,
+  protectedLogo: boolean,
+  logoOverlapsFinder: boolean,
 ): string[] {
   const warnings: string[] = [];
   if (ratio < MIN_CONTRAST_RATIO) warnings.push("Low contrast: these colors may be harder to scan in print. Test a printed sample.");
   if (pixelsPerModule < 2) warnings.push("QR has fewer than two pixels per module");
-  if (decodedPayload !== expectedPayload) warnings.push("QR payload could not be verified");
+  if (logoOverlapsFinder) {
+    warnings.push(
+      "Protected logo overlaps a QR corner recognition square; exact payload and output-scale " +
+      "verification decide whether it is safe. The logo was not automatically removed, moved, or shrunk.",
+    );
+  }
+  if (decodedPayload !== expectedPayload) {
+    warnings.push("QR payload could not be verified");
+    if (protectedLogo) {
+      warnings.push(
+        "The protected logo may cover QR corner recognition squares or too many modules; " +
+        "it was not automatically removed, moved, or shrunk.",
+      );
+    }
+  }
   return warnings;
+}
+
+function logoPixels(
+  region: QRRepairRegion,
+  options: Pick<QRRepairOptions, "logoScale" | "logoRegion">,
+): QRRepairRegion {
+  if (options.logoRegion) {
+    const right = Math.round((options.logoRegion.x + options.logoRegion.width) * region.width);
+    const bottom = Math.round((options.logoRegion.y + options.logoRegion.height) * region.height);
+    const x = Math.round(options.logoRegion.x * region.width);
+    const y = Math.round(options.logoRegion.y * region.height);
+    const logo = { x, y, width: right - x, height: bottom - y };
+    if (
+      logo.width <= 0 ||
+      logo.height <= 0 ||
+      logo.x < 0 ||
+      logo.y < 0 ||
+      logo.x + logo.width > region.width ||
+      logo.y + logo.height > region.height
+    ) {
+      throw new Error(
+        "QR repair logo region is too small at the source size; it cannot be copied without resizing or clipping",
+      );
+    }
+    return logo;
+  }
+
+  const logoSize = Math.max(1, Math.round(Math.min(region.width, region.height) * options.logoScale));
+  return {
+    x: Math.floor((region.width - logoSize) / 2),
+    y: Math.floor((region.height - logoSize) / 2),
+    width: logoSize,
+    height: logoSize,
+  };
+}
+
+function finderRegions(
+  region: QRRepairRegion,
+  moduleCount: number,
+  quietZone: number,
+  pixelsPerModule: number,
+): QRRepairRegion[] {
+  const qrSize = (moduleCount + quietZone * 2) * pixelsPerModule;
+  const originX = Math.floor((region.width - qrSize) / 2);
+  const originY = Math.floor((region.height - qrSize) / 2);
+  const finderSize = 7 * pixelsPerModule;
+  return [
+    { x: originX + quietZone * pixelsPerModule, y: originY + quietZone * pixelsPerModule, width: finderSize, height: finderSize },
+    { x: originX + (quietZone + moduleCount - 7) * pixelsPerModule, y: originY + quietZone * pixelsPerModule, width: finderSize, height: finderSize },
+    { x: originX + quietZone * pixelsPerModule, y: originY + (quietZone + moduleCount - 7) * pixelsPerModule, width: finderSize, height: finderSize },
+  ];
+}
+
+function logoOverlapsFinder(
+  logo: QRRepairRegion,
+  region: QRRepairRegion,
+  moduleCount: number,
+  quietZone: number,
+  pixelsPerModule: number,
+): boolean {
+  // Finder overlap is a user-visible warning only. An unchanged source finder
+  // edge can be protected and still decode exactly; the real decode, scale,
+  // and committed-pixel checks remain the safety gate.
+  const finder = finderRegions(region, moduleCount, quietZone, pixelsPerModule);
+  return finder.some((square) => rectanglesOverlap(logo, square));
 }
 
 /**
@@ -542,6 +660,18 @@ export async function buildQRRepair(
   if (pixelsPerModule < 1) {
     throw new Error("QR repair region is too small for the requested quiet zone");
   }
+  const logo = options.preserveLogo ? logoPixels(region, options) : undefined;
+  const logoOverlapsFinderWarning = Boolean(
+    logo &&
+    options.logoRegion &&
+    logoOverlapsFinder(
+      logo,
+      region,
+      moduleCount,
+      options.quietZone,
+      pixelsPerModule,
+    ),
+  );
 
   const canvas = createCanvas(region.width, region.height);
   const context = context2d(canvas);
@@ -568,23 +698,26 @@ export async function buildQRRepair(
     }
   }
 
-  if (options.preserveLogo) {
-    const logoSize = Math.max(1, Math.round(available * options.logoScale));
-    const sourceLogoX = region.x + Math.floor((region.width - logoSize) / 2);
-    const sourceLogoY = region.y + Math.floor((region.height - logoSize) / 2);
-    const targetLogoX = Math.floor((region.width - logoSize) / 2);
-    const targetLogoY = Math.floor((region.height - logoSize) / 2);
+  if (logo) {
+    const sourceLogoX = region.x + logo.x;
+    const sourceLogoY = region.y + logo.y;
     context.imageSmoothingEnabled = false;
+    // Keep source pixels exactly as supplied. In particular, do not use the
+    // selected QR colours or scale the logo. Clear first so transparent logo
+    // pixels are also copied faithfully instead of revealing new modules
+    // underneath. A canvas-wide "copy" composite operation would clear the
+    // rest of the patch in some canvas implementations.
+    context.clearRect(logo.x, logo.y, logo.width, logo.height);
     context.drawImage(
       source,
       sourceLogoX,
       sourceLogoY,
-      logoSize,
-      logoSize,
-      targetLogoX,
-      targetLogoY,
-      logoSize,
-      logoSize,
+      logo.width,
+      logo.height,
+      logo.x,
+      logo.y,
+      logo.width,
+      logo.height,
     );
   }
 
@@ -595,14 +728,16 @@ export async function buildQRRepair(
     options.payload,
     ratio,
     pixelsPerModule,
+    options.preserveLogo,
+    logoOverlapsFinderWarning,
   );
   if (decoded.bounded) {
     warnings.push("QR verification used a bounded scan image");
   }
 
   // Keep the result's draft options canonical only for values which were
-  // omitted at runtime (quietZone/logoScale). Do not mutate the caller's
-  // draft object.
+  // omitted at runtime (quietZone/logoScale) and clone the protected area.
+  // Do not mutate the caller's draft object.
   const canonicalDraft: QRRepairDraft = {
     ...draft,
     region: { ...region },
@@ -611,6 +746,7 @@ export async function buildQRRepair(
       quietZone: options.quietZone,
       preserveLogo: options.preserveLogo,
       logoScale: options.logoScale,
+      ...(options.logoRegion ? { logoRegion: { ...options.logoRegion } } : {}),
     },
   };
   return {
@@ -681,7 +817,9 @@ function verifyCanvasAtScale(
   const decoded = decodeExact(target, result.draft.options.payload);
   const ppm = result.pixelsPerModule * actualScale;
   const warning = decoded.decodedPayload !== result.draft.options.payload
-      ? "QR payload did not survive the final-size resample"
+      ? result.draft.options.preserveLogo
+        ? "QR payload did not survive the final-size resample; the protected logo may cover corner recognition squares or too many modules. It was not automatically removed, moved, or shrunk."
+        : "QR payload did not survive the final-size resample"
       : ppm < 2
         ? "QR has fewer than two pixels per module at this scale"
         : undefined;
@@ -761,7 +899,13 @@ export function verifyQRRepairPixels(
 
     const decoded = decodeExact(target, options.payload);
     if (decoded.decodedPayload !== options.payload) {
-      throw new Error(`QR pixel verification failed payload for repair ${draft.id || index}`);
+      throw new Error(
+        `QR pixel verification failed payload for repair ${draft.id || index}` +
+        (options.preserveLogo
+          ? "; the protected logo may cover corner recognition squares or too many modules. " +
+            "It was not automatically removed, moved, or shrunk."
+          : ""),
+      );
     }
     // Measure the actual decoded geometry. A preview resample has fractional
     // module spacing; reconstructing a new integer grid here rejects valid
@@ -813,7 +957,13 @@ export async function applyQRRepairs(
   const results: QRRepairResult[] = [];
   for (const draft of drafts) {
     const result = await buildQRRepair(sourceCanvas, draft);
-    if (!result.verified) throw new Error("QR repair could not be verified");
+    if (!result.verified) {
+      throw new Error(
+        result.warnings.find((warning) => warning.includes("protected logo")) ??
+          result.warnings.find((warning) => warning.includes("QR payload")) ??
+          "QR repair could not be verified",
+      );
+    }
     const atTarget = verifyQRRepairAtScale(result, outputScale);
     if (!atTarget.verified) {
       throw new Error(atTarget.warning ?? "QR repair failed final-size verification");
@@ -848,6 +998,12 @@ export async function applyQRRepairs(
     sourceContext.imageSmoothingEnabled = false;
     for (const result of results) {
       const region = result.draft.region;
+      // The generated patch can contain transparent or semi-transparent
+      // protected-logo pixels. Clear the destination first so source-over
+      // compositing does not blend them with the old artwork (for example,
+      // 50% alpha over 50% alpha would become 75%). Rollback below restores
+      // every affected rectangle if either clear or draw fails.
+      sourceContext.clearRect(region.x, region.y, region.width, region.height);
       sourceContext.drawImage(result.canvas, region.x, region.y, region.width, region.height);
     }
   } catch (error) {
