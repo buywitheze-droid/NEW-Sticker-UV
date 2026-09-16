@@ -18,6 +18,7 @@ export type {
   QRErrorCorrection,
 } from "./qr-repair-types";
 
+// Conservative print guidance, not a QR decoding requirement.
 const MIN_CONTRAST_RATIO = 4.5;
 const MAX_PATCH_EDGE = 8192;
 const MAX_PATCH_PIXELS = 16_000_000;
@@ -512,7 +513,7 @@ function warningForVerification(
   pixelsPerModule: number,
 ): string[] {
   const warnings: string[] = [];
-  if (ratio < MIN_CONTRAST_RATIO) warnings.push("QR colours do not meet the 4.5 contrast ratio");
+  if (ratio < MIN_CONTRAST_RATIO) warnings.push("Low contrast: these colors may be harder to scan in print. Test a printed sample.");
   if (pixelsPerModule < 2) warnings.push("QR has fewer than two pixels per module");
   if (decodedPayload !== expectedPayload) warnings.push("QR payload could not be verified");
   return warnings;
@@ -615,8 +616,7 @@ export async function buildQRRepair(
   return {
     draft: canonicalDraft,
     canvas,
-    verified: ratio >= MIN_CONTRAST_RATIO &&
-      pixelsPerModule >= 2 &&
+    verified: pixelsPerModule >= 2 &&
       decoded.decodedPayload === options.payload,
     decodedPayload: decoded.decodedPayload,
     contrastRatio: ratio,
@@ -679,18 +679,14 @@ function verifyCanvasAtScale(
   }
 
   const decoded = decodeExact(target, result.draft.options.payload);
-  const ratio = result.contrastRatio;
   const ppm = result.pixelsPerModule * actualScale;
-  const warning = ratio < MIN_CONTRAST_RATIO
-    ? "QR colours do not meet the 4.5 contrast ratio"
-    : decoded.decodedPayload !== result.draft.options.payload
+  const warning = decoded.decodedPayload !== result.draft.options.payload
       ? "QR payload did not survive the final-size resample"
       : ppm < 2
         ? "QR has fewer than two pixels per module at this scale"
         : undefined;
   return {
-    verified: ratio >= MIN_CONTRAST_RATIO &&
-      decoded.decodedPayload === result.draft.options.payload &&
+    verified: decoded.decodedPayload === result.draft.options.payload &&
       ppm >= 2,
     pixelsPerModule: ppm,
     ...(warning ? { warning } : {}),
@@ -740,9 +736,6 @@ export function verifyQRRepairPixels(
     const options = validateOptions(draft.options);
     if (draft.originalPayload !== undefined && draft.originalPayload !== options.payload) {
       throw new Error(`QR pixel verification rejected immutable payload for repair ${draft.id || index}`);
-    }
-    if (contrastRatio(options.dark, options.light) < MIN_CONTRAST_RATIO) {
-      throw new Error(`QR pixel verification failed contrast for repair ${draft.id || index}`);
     }
     let patch: HTMLCanvasElement;
     try {
@@ -816,7 +809,7 @@ export async function applyQRRepairs(
   }
 
   // Every build reads the unmodified source canvas. No call to drawImage on
-  // sourceCanvas occurs until all builds, contrast gates, and decodes pass.
+  // sourceCanvas occurs until all builds, density checks, and decodes pass.
   const results: QRRepairResult[] = [];
   for (const draft of drafts) {
     const result = await buildQRRepair(sourceCanvas, draft);

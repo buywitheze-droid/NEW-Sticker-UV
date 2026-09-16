@@ -85,10 +85,20 @@ test("reports low contrast and too-small repairs without substituting colours", 
   const source = createCanvas(128, 128);
   const lowContrast = await buildQRRepair(source as unknown as HTMLCanvasElement, draft("contrast", 16, "repair-test", {
     dark: "#777777",
-    light: "#999999",
+    light: "#ffffff",
   }));
-  assert.equal(lowContrast.verified, false);
+  assert.ok(lowContrast.contrastRatio < 4.5);
+  assert.equal(lowContrast.verified, true);
+  assert.equal(verifyQRRepairAtScale(lowContrast, 1).verified, true);
+  assert.equal(lowContrast.draft.options.dark, "#777777");
   assert.ok(lowContrast.warnings.some((warning) => warning.includes("contrast")));
+  await applyQRRepairs(source as unknown as HTMLCanvasElement, [lowContrast.draft]);
+  verifyQRRepairPixels(source as unknown as HTMLCanvasElement, [lowContrast.draft]);
+  const unreadable = await buildQRRepair(source as unknown as HTMLCanvasElement, draft("unreadable", 16, "repair-test", {
+    dark: "#ffffff", light: "#ffffff",
+  }));
+  assert.equal(unreadable.verified, false);
+  assert.equal(verifyQRRepairAtScale(unreadable, 1).verified, false);
   const tiny = createCanvas(33, 33);
   const small = await buildQRRepair(tiny as unknown as HTMLCanvasElement, {
     ...draft("tiny", 0),
@@ -125,7 +135,7 @@ test("validates every repair before painting and keeps application atomic", asyn
   assert.deepEqual(source.toBuffer("image/png"), before);
   await assert.rejects(() => applyQRRepairs(source as unknown as HTMLCanvasElement, [
     draft("valid-first", 16),
-    { ...draft("bad-second", 128), options: { ...draft("bad", 128).options, dark: "#888888", light: "#999999" } },
+    { ...draft("bad-second", 128), options: { ...draft("bad", 128).options, dark: "#999999", light: "#999999" } },
   ]), /verified/);
   assert.deepEqual(source.toBuffer("image/png"), before);
 

@@ -363,8 +363,9 @@ function RebuiltPreview({ result }: { result?: QRRepairResult }) {
   );
 }
 
-function StatusIcon({ ok, pending = false }: { ok: boolean; pending?: boolean }) {
+function StatusIcon({ ok, pending = false, untested = false }: { ok: boolean; pending?: boolean; untested?: boolean }) {
   if (pending) return <Loader2 className="h-4 w-4 animate-spin text-sky-300" aria-hidden="true" />;
+  if (untested) return <span className="h-4 w-4 rounded-full border border-slate-500" aria-hidden="true" />;
   return ok ? (
     <CheckCircle2 className="h-4 w-4 text-emerald-400" aria-hidden="true" />
   ) : (
@@ -916,7 +917,7 @@ export function QRRepairStudio({
       }
       const check = tested[draft.id];
       if (!check || check.signature !== draftSignature(draft)) {
-        return { ready: false, reason: "Verify every queued draft after its latest option change." };
+        return { ready: false, reason: "Settings changed or not checked yet. Click Preview fix for each selected code." };
       }
       if (check.printScale !== printScale || check.printScaleY !== printScaleY) {
         return { ready: false, reason: "Print scale changed; verify every queued draft again." };
@@ -1186,7 +1187,7 @@ export function QRRepairStudio({
                 <div className="grid gap-2 sm:grid-cols-2">
                   <div className="rounded-lg border border-slate-800 bg-slate-950/45 px-3 py-2">
                     <div className="flex items-center gap-2 text-xs text-slate-300">
-                      <StatusIcon ok={Boolean(selectedTest?.result.verified && selectedTest.result.decodedPayload === selectedDraft?.options.payload)} pending={verifyingId === selectedId} />
+                      <StatusIcon ok={Boolean(selectedTest?.result.decodedPayload === selectedDraft?.options.payload)} untested={!selectedTest} pending={verifyingId === selectedId} />
                       Same destination
                     </div>
                     <p className="mt-1 text-[11px] text-slate-500">
@@ -1195,11 +1196,13 @@ export function QRRepairStudio({
                   </div>
                   <div className="rounded-lg border border-slate-800 bg-slate-950/45 px-3 py-2">
                     <div className="flex items-center gap-2 text-xs text-slate-300">
-                      <StatusIcon ok={Boolean(selectedTest?.result.contrastRatio && selectedTest.result.contrastRatio >= 4.5)} pending={verifyingId === selectedId} />
-                      Easy to scan
+                      {selectedTest && selectedTest.result.contrastRatio < 4.5
+                        ? <ShieldAlert className="h-4 w-4 text-amber-300" aria-hidden="true" />
+                        : <StatusIcon ok={Boolean(selectedTest)} untested={!selectedTest} pending={verifyingId === selectedId} />}
+                      Print contrast guidance
                     </div>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      {selectedTest ? (selectedTest.result.contrastRatio >= 4.5 ? "Color contrast passed" : "Color contrast needs attention") : "Preview fix to check"}
+                      {selectedTest ? (selectedTest.result.contrastRatio >= 4.5 ? "Color contrast passed" : "Low contrast — a print warning, not a failed scan.") : "Preview fix to check"}
                     </p>
                   </div>
                   <div className="hidden rounded-lg border border-slate-800 bg-slate-950/45 px-3 py-2">
@@ -1214,7 +1217,7 @@ export function QRRepairStudio({
                 </div>
                 <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/45 px-3 py-2">
                   <div className="flex items-center gap-2 text-xs text-slate-300">
-                    <StatusIcon ok={Boolean(selectedTest?.scale.verified)} pending={verifyingId === selectedId} />
+                    <StatusIcon ok={Boolean(selectedTest?.scale.verified)} untested={!selectedTest} pending={verifyingId === selectedId} />
                     <span>Ready at print size</span>
                   </div>
                   <p className="mt-1 text-[11px] text-slate-500">
@@ -1346,9 +1349,10 @@ export function QRRepairStudio({
                         aria-label="Suggest safe similar QR colors"
                       >
                         <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-                        Suggest safe
+                        Boost contrast
                       </Button>
                     </div>
+                    <p className="text-[11px] text-slate-400">Boost contrast changes colors. Match original restores sampled colors. After any color adjustment, click Preview fix to check again.</p>
                     {selectedOriginalColors ? (
                       <p className="text-[11px] text-slate-500">Original sample: {selectedOriginalColors.dark} on {selectedOriginalColors.light}</p>
                     ) : null}

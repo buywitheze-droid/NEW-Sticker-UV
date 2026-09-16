@@ -20,3 +20,9 @@ Keep the customer-facing QR repair flow simple; technical controls are optional.
 **Why:** After receiving the full studio, the user explicitly asked for it to be extremely simple to use. Exposing all engine capabilities at once does not meet that goal.
 
 **How to apply:** Prefer choosing a code, previewing its fix, and applying it. Keep original-color defaults and verification intact; reveal advanced print settings and manual recovery only when needed.
+
+Contrast recommendations are warnings, not substitutes for real QR decoding.
+
+**Why:** The original 4.5:1 hard gate rejected readable brand colors and pressured customers to recolor their QR. That threshold is conservative guidance, not a universal QR requirement.
+
+**How to apply:** Allow chosen colors only when exact payload and output-size pixel verification pass. Warn about low print contrast; never silently recolor. Color edits invalidate earlier checks and should be shown as awaiting a new preview, not already failed.

@@ -521,22 +521,20 @@ async function runRepairScenario(browser) {
     await setDisclosure(page, "Advanced options: colors, logo and scan settings", true);
     await assertPayloadReadOnly(page);
 
-    // A low-contrast pair must verify visibly but remain ineligible for Apply.
+    // Color edits need a fresh scan, not a false failure from a contrast rule.
     await page.getByLabel("Foreground color value").fill("#777777");
-    await page.getByLabel("Background color value").fill("#999999");
-    await verifySelected(page).catch(() => {
-      // The low-contrast result is expected to fail exact/final status; wait
-      // for its ratio card below instead of treating that expected rejection
-      // as a test failure.
-    });
-    await page.getByText("QR colours do not meet the 4.5 contrast ratio", { exact: true })
-      .first()
-      .waitFor({ timeout: 30_000 });
+    await page.getByLabel("Background color value").fill("#ffffff");
     assert.equal(
       await page.getByRole("button", { name: "Apply verified QR repairs", exact: true }).isDisabled(),
       true,
-      "low contrast must block Apply",
+      "edited colors must invalidate the old scan",
     );
+    await verifySelected(page);
+    await page.getByText("Low contrast — a print warning, not a failed scan.", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Apply verified QR repairs", exact: true }).isDisabled(), false,
+      "an exact, print-size readable code must not fail solely for contrast below 4.5");
+    assert.equal(await page.getByLabel("Foreground color value").inputValue(), "#777777",
+      "verification must never substitute the chosen color");
 
     // Exercise the safe suggestion, then intentionally match the sampled
     // source colors for the final repair.
