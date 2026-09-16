@@ -13,6 +13,7 @@ import { cropImageToContent, getImageBounds } from "./lib/image-crop";
 import { convertPolygonToCurves, gaussianSmoothContour } from "./lib/clipper-path";
 import { drawVectorQRsOnCanvas2D } from "./lib/qr";
 import { drawGangSheetPreview } from "./lib/gang-sheet-preview";
+import { gangSheetPreviewResolution } from "./lib/gang-sheet-preview-resolution";
 import type { GangSheetItem, GangSheetSettings, PackResult } from "./lib/gang-sheet";
 import { createSpotOverlayCanvas as buildSpotOverlayCanvas, overlayCacheKey } from "./lib/spot-overlay";
 
@@ -721,12 +722,15 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
 
       const canvasWidth = previewDims.width;
       const canvasHeight = previewDims.height;
-      if (lastCanvasDimsRef.current.width !== canvasWidth || lastCanvasDimsRef.current.height !== canvasHeight) {
-        canvas.width = canvasWidth;
-        canvas.height = canvasHeight;
-        lastCanvasDimsRef.current = { width: canvasWidth, height: canvasHeight };
+      const bitmap = gangSheetView
+        ? gangSheetPreviewResolution(canvasWidth, canvasHeight, zoom)
+        : { width: canvasWidth, height: canvasHeight };
+      if (lastCanvasDimsRef.current.width !== bitmap.width || lastCanvasDimsRef.current.height !== bitmap.height) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        lastCanvasDimsRef.current = bitmap;
       } else {
-        ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+        ctx.clearRect(0, 0, bitmap.width, bitmap.height);
       }
 
       if (gangSheetView) {
@@ -745,6 +749,9 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         const ox = (canvasWidth - displayWidth) / 2;
         const oy = (canvasHeight - displayHeight) / 2;
         ctx.save();
+        ctx.scale(bitmap.width / canvasWidth, bitmap.height / canvasHeight);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.translate(ox, oy);
         drawGangSheetPreview(ctx, {
           items: gangSheetView.items,
@@ -1096,7 +1103,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       return () => {
         if (renderRafRef.current) { cancelAnimationFrame(renderRafRef.current); renderRafRef.current = null; }
       };
-    }, [imageInfo, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, backgroundColor, isProcessing, spotPreviewData, previewDims.height, previewDims.width, lockedContour, segmentationData, gangSheetView, isEnhancing, onPreviewStatus]);
+    }, [imageInfo, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, backgroundColor, isProcessing, spotPreviewData, previewDims.height, previewDims.width, lockedContour, segmentationData, gangSheetView, gangSheetView ? zoom : 1, isEnhancing, onPreviewStatus]);
 
     useEffect(() => {
       if (!spotPreviewData?.enabled) {

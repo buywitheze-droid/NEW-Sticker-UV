@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
+import { Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -13,6 +13,7 @@ import {
   maxQuantityForItem,
   clampGangSheetQuantity,
   downloadGangSheetPDF,
+  downloadGangSheetItemPDF,
   expandSettingsToFit,
   GANG_SHEET_PRESETS,
   type GangSheetItem,
@@ -43,6 +44,7 @@ export default function GangSheetPanel({
   packResult: packResultProp,
 }: GangSheetPanelProps) {
   const [isExporting, setIsExporting] = useState(false);
+  const [downloadingItemId, setDownloadingItemId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveNameDialogOpen, setSaveNameDialogOpen] = useState(false);
   const [saveNameValue, setSaveNameValue] = useState("");
@@ -185,6 +187,21 @@ export default function GangSheetPanel({
     onItemsChange(items.map((i) => (i.id === target.id ? { ...i, quantity: maxFit } : i)));
   }, [items, settings, onItemsChange, onFillSheet, toast]);
 
+  const handleDownloadItem = useCallback(async (item: GangSheetItem) => {
+    setDownloadingItemId(item.id);
+    try {
+      await downloadGangSheetItemPDF(item);
+    } catch (err) {
+      toast({
+        title: "Couldn't download design",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingItemId(null);
+    }
+  }, [toast]);
+
   const handleExport = useCallback(async () => {
     setIsExporting(true);
     try {
@@ -306,9 +323,14 @@ export default function GangSheetPanel({
         </div>
       )}
 
-      <ScrollArea className="max-h-[min(52vh,520px)] px-3 py-3">
+      <div
+        role="region"
+        aria-label="Gang sheet layers"
+        tabIndex={0}
+        className="max-h-[min(52vh,520px)] overflow-y-auto overflow-x-hidden px-3 py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
+      >
         <div className="space-y-2">
-          {items.map((item) => {
+          {items.map((item, index) => {
             const isTooBig = fitInfo.tooBigIds.has(item.id);
             return (
               <div
@@ -324,6 +346,18 @@ export default function GangSheetPanel({
                   alt="sticker"
                   className="w-11 h-11 object-contain rounded bg-white border border-white/15"
                 />
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadItem(item)}
+                  disabled={downloadingItemId !== null || isExporting || isSaving}
+                  aria-label={`Download design ${index + 1} PDF`}
+                  title="Download this design with its saved outline (one copy)"
+                  className="shrink-0 w-7 h-8 flex items-center justify-center rounded bg-white/10 border border-white/15 text-cyan-200 hover:bg-white/20 disabled:opacity-40 disabled:cursor-wait focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
+                >
+                  {downloadingItemId === item.id
+                    ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                    : <Download className="w-4 h-4" aria-hidden="true" />}
+                </button>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-medium text-[#e8eef6] truncate">
                     {item.resizeSettings.widthInches.toFixed(1)}" × {item.resizeSettings.heightInches.toFixed(1)}"
@@ -390,12 +424,12 @@ export default function GangSheetPanel({
             </div>
           )}
         </div>
-      </ScrollArea>
+      </div>
 
       <div className="p-3 border-t border-white/10">
         <Button
           onClick={handleExport}
-          disabled={isExporting || packResult.placements.length === 0}
+          disabled={isExporting || isSaving || downloadingItemId !== null || packResult.placements.length === 0}
           className="w-full h-10 bg-[#4dff80] hover:bg-[#2ee66a] text-[#05321a] font-semibold"
         >
           {isExporting ? "Exporting..." : "Download Gang Sheet PDF"}
@@ -403,7 +437,7 @@ export default function GangSheetPanel({
         {isAuthenticated && (
           <Button
             onClick={handleSaveGangSheet}
-            disabled={isSaving || packResult.placements.length === 0}
+            disabled={isSaving || isExporting || downloadingItemId !== null || packResult.placements.length === 0}
             variant="outline"
             className="w-full mt-2 h-10 border-white/20 bg-white/10 text-white hover:bg-white/20"
           >

@@ -36,6 +36,7 @@ const quiet = async <T>(fn: () => T | Promise<T>): Promise<T> => {
 };
 
 let clickedLinks = 0;
+const downloadedFilenames: string[] = [];
 
 function installDocumentShim() {
   const documentShim = {
@@ -44,11 +45,15 @@ function installDocumentShim() {
         return createCanvas(1, 1);
       }
       if (tagName === "a") {
-        return {
+        const link = {
           href: "",
           download: "",
-          click: () => { clickedLinks++; },
+          click: () => {
+            clickedLinks++;
+            downloadedFilenames.push(link.download);
+          },
         };
+        return link;
       }
       throw new Error(`Unsupported test document element: ${tagName}`);
     },
@@ -178,6 +183,9 @@ function makeItem(
     shape?: GangSheetItem["shapeSettings"];
     spotColors?: GangSheetItem["spotColors"];
     resize?: { widthInches: number; heightInches: number };
+    strokeSettings?: Partial<GangSheetItem["strokeSettings"]>;
+    cutContourLabel?: string;
+    noCutPath?: boolean;
   } = {},
 ): GangSheetItem {
   const resize = options.resize ?? {
@@ -195,9 +203,10 @@ function makeItem(
       maintainAspectRatio: false,
       outputDPI: 300,
     },
-    strokeSettings: { ...strokeSettings },
+    strokeSettings: { ...strokeSettings, ...options.strokeSettings },
     shapeSettings: options.shape,
-    cutContourLabel: "CutContour",
+    cutContourLabel: options.cutContourLabel ?? "CutContour",
+    noCutPath: options.noCutPath,
     quantity,
     spotColors: options.spotColors,
   };
@@ -226,6 +235,19 @@ function separationNames(pdf: PDFDocument, page: ReturnType<PDFDocument["getPage
   const colorSpaces = resources.lookupMaybe(PDFName.of("ColorSpace"), PDFDict);
   assert.ok(colorSpaces, "export page should register color spaces");
   return colorSpaces.keys().map(name => name.asString().replace(/^\/+/, ""));
+}
+
+function imageXObjectCount(pdf: PDFDocument, page: ReturnType<PDFDocument["getPages"]>[number]): number {
+  const resources = page.node.Resources();
+  assert.ok(resources, "export page should have PDF resources");
+  const xObjects = resources.lookupMaybe(PDFName.of("XObject"), PDFDict);
+  if (!xObjects) return 0;
+  return xObjects.entries().filter(([, ref]) => {
+    const object = pdf.context.lookup(ref) as { dict?: PDFDict } | undefined;
+    const subtype = object?.dict?.get(PDFName.of("Subtype"));
+    return subtype instanceof PDFName
+      && subtype.asString().replace(/^\/+/, "") === "Image";
+  }).length;
 }
 
 function assertPlacementGeometry(
@@ -259,6 +281,95 @@ function assertPlacementGeometry(
       assert.ok(separatedX || separatedY, `placements ${i} and ${j} must keep the nesting gap`);
     }
   }
+}
+
+function makeSavedContour(widthInches = 2, heightInches = 1.5): CachedContourData {
+  const outerPath = [
+    { x: 0, y: 0 },
+    { x: widthInches, y: 0 },
+    { x: widthInches, y: heightInches },
+    { x: 0, y: heightInches },
+  ];
+  const holePath = [
+    { x: 0.6, y: 0.45 },
+    { x: 1.4, y: 0.45 },
+    { x: 1.4, y: 1.05 },
+    { x: 0.6, y: 1.05 },
+  ];
+
+  return {
+    pathPoints: outerPath,
+    previewPathPoints: outerPath,
+    allPathPoints: [outerPath, holePath],
+    allPreviewPathPoints: [outerPath, holePath],
+    allBezierPaths: [
+      {
+        start: { x: 0, y: 0 },
+        segments: [
+          {
+            type: "cubic" as const,
+            cp1: { x: 0.55, y: 0 },
+            cp2: { x: 1.45, y: 0 },
+            to: { x: widthInches, y: 0 },
+          },
+          { type: "line" as const, to: { x: widthInches, y: heightInches } },
+          {
+            type: "cubic" as const,
+            cp1: { x: 1.45, y: heightInches },
+            cp2: { x: 0.55, y: heightInches },
+            to: { x: 0, y: heightInches },
+          },
+          { type: "line" as const, to: { x: 0, y: 0 } },
+        ],
+        closed: true as const,
+      },
+      {
+        start: { x: 0.6, y: 0.45 },
+        segments: [
+          { type: "line" as const, to: { x: 1.4, y: 0.45 } },
+          { type: "line" as const, to: { x: 1.4, y: 1.05 } },
+          { type: "line" as const, to: { x: 0.6, y: 1.05 } },
+          { type: "line" as const, to: { x: 0.6, y: 0.45 } },
+        ],
+        closed: true as const,
+      },
+    ],
+    allBezierPathsPreview: [],
+    widthInches,
+    heightInches,
+    imageOffsetX: 0,
+    imageOffsetY: 0,
+    backgroundColor: "#ffffff",
+    effectiveDPI: 300,
+    minPathX: 0,
+    minPathY: 0,
+    bleedInches: 0.1,
+    holePathStartIndex: 1,
+  };
+}
+
+function makeWhiteGlossColors(): NonNullable<GangSheetItem["spotColors"]> {
+  return [{
+    hex: "#ff0000",
+    rgb: { r: 255, g: 0, b: 0 },
+    spotWhite: true,
+    spotGloss: true,
+    spotWhiteName: "RDG_WHITE",
+    spotGlossName: "RDG_GLOSS",
+    spotFluorY: false,
+    spotFluorM: false,
+    spotFluorG: false,
+    spotFluorOrange: false,
+  }];
+}
+
+async function exportSavedItem(item: GangSheetItem): Promise<Blob> {
+  return quiet(() => gangSheet.downloadGangSheetItemPDF(item));
+}
+
+function clearCapturedDownloads(): void {
+  clickedLinks = 0;
+  downloadedFilenames.length = 0;
 }
 
 test("actual contour results pack and export one bounded gang-sheet page", async () => {
@@ -423,4 +534,109 @@ test("requested separation failure rejects before creating a download", async ()
     PDFDocument.prototype.addPage = originalAddPage;
   }
   assert.equal(clickedLinks, 0, "a failed spot export must not click a download link");
+});
+
+test("saved item PDF keeps tight bounds, cached curves and holes without duplicating artwork", async () => {
+  const contour = makeSavedContour();
+  const item = makeItem(
+    "../../bad name?x",
+    makeSpotArt(),
+    contour,
+    4,
+    {
+      cutContourLabel: "PerfCutContour",
+      strokeSettings: { width: 0 },
+    },
+  );
+  const before = itemSnapshot(item);
+
+  clearCapturedDownloads();
+  const blob = await exportSavedItem(item);
+  assert.equal(blob.type, "application/pdf");
+  assert.equal(clickedLinks, 1);
+  assert.equal(downloadedFilenames.at(-1), "design_badnamex_2.00x1.50.pdf");
+
+  const pdf = await PDFDocument.load(new Uint8Array(await blob.arrayBuffer()));
+  assert.equal(pdf.getPageCount(), 1);
+  const page = pdf.getPages()[0];
+  assert.equal(page.getWidth(), contour.widthInches * 72);
+  assert.equal(page.getHeight(), contour.heightInches * 72);
+
+  const content = pageContent(pdf, page);
+  // The raster background and the one cached design are the only image draws.
+  // The source item asks for four copies, but the saved-item export is one-up.
+  assert.equal(imageXObjectCount(pdf, page), 2);
+  assert.ok(separationNames(pdf, page).includes("PerfCutContour"));
+  assert.equal(
+    (content.match(/\/PerfCutContour CS 1 SCN/g) ?? []).length,
+    2,
+    "the cached outer and hole paths should both use the custom cut label",
+  );
+  assert.ok((content.match(/\bc$/gm) ?? []).length >= 2, "cached cubic segments should survive PDF export");
+  assert.deepEqual(itemSnapshot(item), before, "saved-item export must not mutate the source item");
+});
+
+test("saved item PDF honors noCutPath and rejects invalid saved dimensions", async () => {
+  const contour = makeSavedContour();
+  const item = makeItem("no-cut", makeSpotArt(), contour, 3, { noCutPath: true });
+  const before = itemSnapshot(item);
+
+  clearCapturedDownloads();
+  const blob = await exportSavedItem(item);
+  const pdf = await PDFDocument.load(new Uint8Array(await blob.arrayBuffer()));
+  const content = pageContent(pdf, pdf.getPages()[0]);
+  assert.doesNotMatch(content, /\/CutContour CS 1 SCN/);
+  assert.doesNotMatch(content, /\sS\s/);
+  assert.equal(clickedLinks, 1);
+  assert.deepEqual(itemSnapshot(item), before, "no-cut export must not mutate the source item");
+
+  clearCapturedDownloads();
+  const invalidItem = {
+    ...item,
+    contourData: { ...item.contourData, widthInches: Number.NaN },
+  };
+  await assert.rejects(
+    () => exportSavedItem(invalidItem),
+    /invalid saved dimensions/i,
+  );
+  assert.equal(clickedLinks, 0, "invalid dimensions must fail before creating a download link");
+  assert.equal(downloadedFilenames.length, 0);
+});
+
+
+test("saved item PDF emits White and Gloss plates and blocks download on a missing plate", async () => {
+  const contour = makeSavedContour();
+  const item = makeItem("white-gloss", makeSpotArt(), contour, 5, {
+    spotColors: makeWhiteGlossColors(),
+  });
+  const before = itemSnapshot(item);
+
+  clearCapturedDownloads();
+  const blob = await exportSavedItem(item);
+  const pdf = await PDFDocument.load(new Uint8Array(await blob.arrayBuffer()));
+  assert.equal(pdf.getPageCount(), 3, "base page plus White and Gloss plates");
+  const pageNames = pdf.getPages().map(page => separationNames(pdf, page));
+  assert.ok(pageNames.some(names => names.includes("RDG_WHITE")), JSON.stringify(pageNames));
+  assert.ok(pageNames.some(names => names.includes("RDG_GLOSS")), JSON.stringify(pageNames));
+  assert.equal(clickedLinks, 1);
+  assert.deepEqual(itemSnapshot(item), before, "spot plate export must not mutate the source item");
+
+  clearCapturedDownloads();
+  const originalAddPage = PDFDocument.prototype.addPage;
+  let addPageCalls = 0;
+  PDFDocument.prototype.addPage = function (...args) {
+    addPageCalls++;
+    if (addPageCalls === 2) throw new Error("intentional missing White plate");
+    return originalAddPage.apply(this, args);
+  };
+  try {
+    await assert.rejects(
+      () => exportSavedItem(item),
+      /Could not generate the gang sheet spot-color layers/,
+    );
+  } finally {
+    PDFDocument.prototype.addPage = originalAddPage;
+  }
+  assert.equal(clickedLinks, 0, "a missing production plate must prevent link download");
+  assert.equal(downloadedFilenames.length, 0);
 });

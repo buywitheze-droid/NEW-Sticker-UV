@@ -437,11 +437,27 @@ function remapBezierPathToSheet(
 
 // ─── Gang Sheet PDF Export ───
 
+/** Export one saved design, without repacking or retracing its locked outline. */
+export async function downloadGangSheetItemPDF(item: GangSheetItem): Promise<Blob> {
+  const { widthInches: width, heightInches: height } = item.contourData;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw new Error("This design has invalid saved dimensions and cannot be downloaded.");
+  }
+  const safeId = item.id.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12) || "sticker";
+  return downloadGangSheetPDF(
+    [{ ...item, quantity: 1 }],
+    { sheetWidth: width, sheetHeight: height, gap: 0, edgePadding: 0 },
+    [{ itemId: item.id, instanceIndex: 0, x: 0, y: 0, width, height, rotated: false }],
+    { filename: `design_${safeId}_${width.toFixed(2)}x${height.toFixed(2)}.pdf`, singleDesign: true },
+  );
+}
+
 // Also returns the generated Blob so a caller can persist it via "Save Gang Sheet" — same bytes.
 export async function downloadGangSheetPDF(
   items: GangSheetItem[],
   settings: GangSheetSettings,
-  placements: PlacedItem[]
+  placements: PlacedItem[],
+  options: { filename?: string; singleDesign?: boolean } = {},
 ): Promise<Blob> {
   const { sheetWidth, sheetHeight } = settings;
   const widthPts = sheetWidth * 72;
@@ -451,8 +467,10 @@ export async function downloadGangSheetPDF(
   const page = pdfDoc.addPage([widthPts, heightPts]);
   const context = pdfDoc.context;
 
-  pdfDoc.setTitle('Gang Sheet');
-  pdfDoc.setSubject('Gang sheet with multiple sticker designs and CutContour paths');
+  pdfDoc.setTitle(options.singleDesign ? 'Saved Design' : 'Gang Sheet');
+  pdfDoc.setSubject(options.singleDesign
+    ? 'Individual saved design with its original contour and print settings'
+    : 'Gang sheet with multiple sticker designs and CutContour paths');
 
   const itemMap = new Map<string, GangSheetItem>();
   for (const item of items) itemMap.set(item.id, item);
@@ -872,7 +890,7 @@ export async function downloadGangSheetPDF(
   try {
     const link = document.createElement('a');
     link.href = url;
-    link.download = `gang_sheet_${sheetWidth}x${sheetHeight}.pdf`;
+    link.download = options.filename ?? `gang_sheet_${sheetWidth}x${sheetHeight}.pdf`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
