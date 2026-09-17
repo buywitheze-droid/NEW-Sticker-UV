@@ -14,7 +14,7 @@ import { getContourWorkerManager, type DetectedAlgorithm } from "./lib/contour-w
 import { extractColorsFromImageAsync, detectColorRegionsAsync, ExtractedColor, type ColorExtractionResult } from "./lib/color-extractor";
 import { mergeDetectedColorRegions } from "./lib/spot-selection-state";
 import AutoSpotLayersPanel from "./auto-spot-layers-panel";
-import { Download, ChevronDown, ChevronUp, Eye, EyeOff, X, Layers, Palette, Pipette, Trash2, Link, Unlink, Settings2, Spline, Shapes } from "lucide-react";
+import { Download, ChevronDown, ChevronUp, Eye, EyeOff, Pencil, Check, X, Layers, Palette, Pipette, Trash2, Link, Unlink, Settings2, Spline, Shapes } from "lucide-react";
 import SizeInput from "@/components/image-editor/size-input";
 
 export interface SpotPreviewData {
@@ -39,7 +39,8 @@ interface ControlsSectionProps {
   shapeSettings: ShapeSettings;
   stickerSize: StickerSize;
   // Current export label (may be a manual override of what was actually detected in the file) — compared against pdfCutContourInfo.detectedLabel to explain any mismatch.
-  cutContourLabel?: 'CutContour' | 'PerfCutContour' | 'KissCut';
+  cutContourLabel?: string;
+  onCutContourLabelChange?: (label: string) => void;
   onStrokeChange: (settings: Partial<StrokeSettings>) => void;
   onResizeChange: (settings: Partial<ResizeSettings>) => void;
   onShapeChange: (settings: Partial<ShapeSettings>) => void;
@@ -79,6 +80,7 @@ export default function ControlsSection({
   shapeSettings,
   stickerSize,
   cutContourLabel,
+  onCutContourLabelChange,
   onStrokeChange,
   onResizeChange,
   onShapeChange,
@@ -125,6 +127,11 @@ export default function ControlsSection({
   const [showSizeSection, setShowSizeSection] = useState(false);
   const [spotWhiteName, setSpotWhiteName] = useState("RDG_WHITE");
   const [spotGlossName, setSpotGlossName] = useState("RDG_GLOSS");
+  const [editingWhiteName, setEditingWhiteName] = useState(false);
+  const [editingGlossName, setEditingGlossName] = useState(false);
+  const [tempWhiteName, setTempWhiteName] = useState("");
+  const [tempGlossName, setTempGlossName] = useState("");
+  const [cutContourDraft, setCutContourDraft] = useState<string | null>(null);
   const [expandedColorIndex, setExpandedColorIndex] = useState<number | null>(null);
   const [showOutlineType, setShowOutlineType] = useState(true);
   const [showShapeAdvanced, setShowShapeAdvanced] = useState(false);
@@ -138,6 +145,20 @@ export default function ControlsSection({
 
   const canDownload = !!imageInfo;
   const extractionRef = useRef<ColorExtractionResult | null>(null);
+
+  const commitSpotName = useCallback((kind: "white" | "gloss", value: string) => {
+    const trimmed = value.trim();
+    const candidate = trimmed;
+    const other = kind === "white" ? spotGlossName : spotWhiteName;
+    const contour = cutContourLabel?.trim();
+    // Never commit an empty separation name; retain the last valid value.
+    if (!candidate) return;
+    if ([other, contour].filter(Boolean).some(name => name!.toLowerCase() === candidate.toLowerCase())) {
+      toast({ title: "Spot name already in use", description: "White, Varnish (Gloss), and CutContour must have unique names.", variant: "destructive" });
+      return;
+    }
+    (kind === "white" ? setSpotWhiteName : setSpotGlossName)(candidate);
+  }, [cutContourLabel, spotGlossName, spotWhiteName, toast]);
 
   const fillPalette = (() => {
     const base = ['#FFFFFF', '#000000', '#FF0000', '#0066FF', '#00AA00'];
@@ -202,6 +223,7 @@ export default function ControlsSection({
     // Also restore custom names — otherwise this component's own defaults overwrite them right back.
     if (spotColorRestore.spotWhiteName) setSpotWhiteName(spotColorRestore.spotWhiteName);
     if (spotColorRestore.spotGlossName) setSpotGlossName(spotColorRestore.spotGlossName);
+    if (spotColorRestore.colors.length === 0) return;
     setExtractedColors(prev => {
       if (prev.length === 0 && spotColorRestore.colors.length === 0) return prev;
       return spotColorRestore.colors.map((restored, i) => {
@@ -476,10 +498,10 @@ export default function ControlsSection({
         if (strokeSettings.enabled) {
           const workerManager = getContourWorkerManager();
           const cachedData = workerManager.getCachedContourData();
-          const result = await generateContourPDFBase64(imageInfo.image, strokeSettings, resizeSettings, cachedData || undefined, undefined, imageInfo);
+          const result = await generateContourPDFBase64(imageInfo.image, strokeSettings, resizeSettings, cachedData || undefined, cutContourLabel || "CutContour", imageInfo);
           pdfBase64 = result || "";
         } else if (shapeSettings.enabled) {
-          const result = await generateShapePDFBase64(imageInfo.image, shapeSettings, resizeSettings);
+          const result = await generateShapePDFBase64(imageInfo.image, shapeSettings, resizeSettings, cutContourLabel || "CutContour");
           pdfBase64 = result || "";
         }
       }
@@ -1421,6 +1443,78 @@ export default function ControlsSection({
 
               </div>
             )}
+          </div>
+        )}
+
+        {/* Spot separation names remain editable even when this builder intentionally
+            disables the ink-selection UI (for example, the gang-sheet entry path). */}
+        {imageInfo && (
+          <div className="mx-4 mb-3 rounded-lg border border-white/10 bg-white/5 px-3 py-2 space-y-2">
+            <label className="flex items-center gap-2">
+              <span className="text-[10px] text-[#9fb3c8] w-24 shrink-0">CutContour spot name</span>
+              <input
+                type="text"
+                list="spot-uv-cut-contour-presets"
+                value={cutContourDraft ?? cutContourLabel ?? "CutContour"}
+                onChange={(e) => setCutContourDraft(e.target.value)}
+                onBlur={() => {
+                  if (cutContourDraft !== null) onCutContourLabelChange?.(cutContourDraft);
+                  setCutContourDraft(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                  else if (e.key === "Escape") {
+                    setCutContourDraft(null);
+                  }
+                }}
+                className="min-w-0 flex-1 h-6 px-1.5 text-[10px] border border-white/15 rounded bg-[#2d5a8a] text-[#e8eef6]"
+                aria-label="CutContour spot name"
+              />
+              <datalist id="spot-uv-cut-contour-presets">
+                <option value="CutContour" />
+                <option value="PerfCutContour" />
+                <option value="KissCut" />
+              </datalist>
+            </label>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-[#9fb3c8]">Spot separation names</div>
+            {([
+              ["white", "White", spotWhiteName, editingWhiteName, tempWhiteName, setEditingWhiteName, setTempWhiteName],
+              ["gloss", "Varnish (Gloss)", spotGlossName, editingGlossName, tempGlossName, setEditingGlossName, setTempGlossName],
+            ] as const).map(([kind, label, name, editing, temp, setEditing, setTemp]) => (
+              <div key={kind} className="flex items-center gap-2 min-w-0">
+                <span className="text-[10px] text-[#9fb3c8] w-24 shrink-0">{label}</span>
+                {editing ? (
+                  <input
+                    type="text"
+                    aria-label={`${label} spot name`}
+                    value={temp}
+                    onChange={(e) => setTemp(e.target.value)}
+                    className="min-w-0 flex-1 h-6 px-1.5 text-[10px] border border-white/15 rounded bg-[#2d5a8a] text-[#e8eef6]"
+                    autoFocus
+                    onBlur={() => { commitSpotName(kind, temp); setEditing(false); }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { commitSpotName(kind, temp); setEditing(false); }
+                      else if (e.key === "Escape") setEditing(false);
+                    }}
+                  />
+                ) : (
+                  <>
+                    <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-[#e8eef6]">{name}</span>
+                    <button
+                      type="button"
+                      onClick={() => { setTemp(name); setEditing(true); }}
+                      className="p-0.5 hover:bg-white/10 rounded"
+                      title={`Edit ${label} spot name`}
+                    ><Pencil className="w-3 h-3 text-[#9fb3c8]" /></button>
+                  </>
+                )}
+                {editing && (
+                  <button type="button" onClick={() => { commitSpotName(kind, temp); setEditing(false); }} className="p-0.5 hover:bg-emerald-400/15 rounded" title="Save">
+                    <Check className="w-3 h-3 text-emerald-300" />
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
         )}
 

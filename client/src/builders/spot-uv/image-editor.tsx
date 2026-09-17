@@ -137,7 +137,7 @@ export default function ImageEditor({
   const [detectedAlgorithm, setDetectedAlgorithm] = useState<DetectedAlgorithm | undefined>(undefined);
   const [detectedShapeType, setDetectedShapeType] = useState<'circle' | 'oval' | 'square' | 'rectangle' | null>(null);
   const [detectedShapeInfo, setDetectedShapeInfo] = useState<DetectedShapeInfo | null>(null);
-  const [cutContourLabel, setCutContourLabel] = useState<'CutContour' | 'PerfCutContour' | 'KissCut'>('CutContour');
+  const [cutContourLabel, setCutContourLabel] = useState<string>('CutContour');
   const [lockedContour, setLockedContour] = useState<LockedContour | null>(null);
   const [segmentationData, setSegmentationData] = useState<SegmentationData>({
     enabled: false,
@@ -184,6 +184,16 @@ export default function ImageEditor({
   }>({ pending: false, args: null });
   const [gangSheetItems, setGangSheetItems] = useState<GangSheetItem[]>([]);
   const [gangSheetOpen, setGangSheetOpen] = useState(false);
+  const commitCutContourLabel = useCallback((raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const spotNames = [spotPreviewData.spotWhiteName || "RDG_WHITE", spotPreviewData.spotGlossName || "RDG_GLOSS"];
+    if (spotNames.some(name => name.toLowerCase() === trimmed.toLowerCase())) {
+      toast({ title: "Spot name already in use", description: "CutContour must be different from White and Varnish (Gloss).", variant: "destructive" });
+      return;
+    }
+    setCutContourLabel(trimmed);
+  }, [spotPreviewData.spotGlossName, spotPreviewData.spotWhiteName, toast]);
   const [gangSheetSettings, setGangSheetSettings] = useState<GangSheetSettings>(DEFAULT_GANG_SHEET_SETTINGS);
   const [spotPaintMode, setSpotPaintMode] = useState<'white' | 'gloss' | 'both' | 'clear' | null>(null);
   const [pendingSpotPaint, setPendingSpotPaint] = useState<{ colorIndex: number; regionId: number | null; mode: string; id: number } | null>(null);
@@ -217,6 +227,7 @@ export default function ImageEditor({
     resizeSettings: ResizeSettings;
     shapeSettings: ShapeSettings;
     spotColors: SpotPreviewData;
+    cutContourLabel: string;
     imageInfo: ImageInfo | null;
   }
   const historyRef = useRef<EditorSnapshot[]>([]);
@@ -233,6 +244,7 @@ export default function ImageEditor({
       resizeSettings: { ...resizeSettings },
       shapeSettings: { ...shapeSettings },
       spotColors: { ...spotPreviewData, colors: spotPreviewData.colors.map(c => ({ ...c, regions: c.regions?.map(r => ({ ...r })) })) },
+      cutContourLabel,
       imageInfo: imageOverride ? { ...imageOverride } : imageInfo ? { ...imageInfo } : null,
     };
     const idx = historyIndexRef.current;
@@ -254,8 +266,9 @@ export default function ImageEditor({
       const sameStroke = JSON.stringify(prev.strokeSettings) === JSON.stringify(snap.strokeSettings);
       const sameGeometry = JSON.stringify(prev.resizeSettings) === JSON.stringify(snap.resizeSettings) &&
         JSON.stringify(prev.shapeSettings) === JSON.stringify(snap.shapeSettings);
+      const sameCutContour = prev.cutContourLabel === snap.cutContourLabel;
       const samePixels = prev.imageInfo?.image === snap.imageInfo?.image;
-      if (sameSpot && sameStroke && samePixels && sameGeometry) {
+      if (sameSpot && sameStroke && samePixels && sameGeometry && sameCutContour) {
         return;
       }
     }
@@ -265,7 +278,7 @@ export default function ImageEditor({
     historyIndexRef.current = historyRef.current.length - 1;
     setCanUndo(historyIndexRef.current > 0);
     setCanRedo(false);
-  }, [strokeSettings, resizeSettings, shapeSettings, spotPreviewData, imageInfo]);
+  }, [strokeSettings, resizeSettings, shapeSettings, cutContourLabel, spotPreviewData, imageInfo]);
 
   // Debounced snapshot: batch rapid changes into one history entry
   useEffect(() => {
@@ -275,12 +288,13 @@ export default function ImageEditor({
       pushSnapshot();
     }, 600);
     return () => { if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current); };
-  }, [strokeSettings, resizeSettings, shapeSettings, spotPreviewData, imageInfo, pushSnapshot]);
+  }, [strokeSettings, resizeSettings, shapeSettings, cutContourLabel, spotPreviewData, imageInfo, pushSnapshot]);
 
   const restoreSnapshot = useCallback((snap: EditorSnapshot) => {
     setStrokeSettings(snap.strokeSettings);
     setResizeSettings(snap.resizeSettings);
     setShapeSettings(snap.shapeSettings);
+    setCutContourLabel(snap.cutContourLabel || "CutContour");
     setSpotPreviewData(snap.spotColors);
     setSpotColorRestore({ colors: snap.spotColors.colors, id: Date.now(), spotWhiteName: snap.spotColors.spotWhiteName, spotGlossName: snap.spotColors.spotGlossName });
     const imageChanged = snap.imageInfo?.image?.src !== imageInfo?.image?.src;
@@ -1425,6 +1439,12 @@ export default function ImageEditor({
         spotWhiteName: s.spotColors.spotWhiteName,
         spotGlossName: s.spotColors.spotGlossName,
       }));
+      setSpotColorRestore({
+        colors: [],
+        id: Date.now(),
+        spotWhiteName: s.spotColors.spotWhiteName,
+        spotGlossName: s.spotColors.spotGlossName,
+      });
       pendingSpotTagsRef.current = s.spotColors.tags;
       setCurrentDesignId(design.id);
       setCurrentDesignName(design.name);
@@ -1469,6 +1489,12 @@ export default function ImageEditor({
         spotWhiteName: s.spotColors.spotWhiteName,
         spotGlossName: s.spotColors.spotGlossName,
       }));
+      setSpotColorRestore({
+        colors: [],
+        id: Date.now(),
+        spotWhiteName: s.spotColors.spotWhiteName,
+        spotGlossName: s.spotColors.spotGlossName,
+      });
       pendingSpotTagsRef.current = s.spotColors.tags;
       setCurrentDesignName(design.name);
       setIsReadOnlyView(true);
@@ -1867,9 +1893,9 @@ export default function ImageEditor({
         
         // Download additional vector formats based on requested format
         if (format === 'svg') {
-          downloadVectorStroke(magentaCutCanvas, 'cut_contour.svg', 'svg', vectorPaths);
+          downloadVectorStroke(magentaCutCanvas, 'cut_contour.svg', 'svg', vectorPaths, cutContourLabel);
         } else if (format === 'eps') {
-          downloadVectorStroke(magentaCutCanvas, 'cut_contour.eps', 'eps', vectorPaths);
+          downloadVectorStroke(magentaCutCanvas, 'cut_contour.eps', 'eps', vectorPaths, cutContourLabel);
         }
       } else {
         // Standard download - shape background or contour outline
@@ -2133,6 +2159,7 @@ export default function ImageEditor({
           shapeSettings={shapeSettings}
           stickerSize={stickerSize}
           cutContourLabel={cutContourLabel}
+          onCutContourLabelChange={commitCutContourLabel}
           onStrokeChange={handleStrokeChange}
           onResizeChange={handleResizeChange}
           onShapeChange={handleShapeChange}

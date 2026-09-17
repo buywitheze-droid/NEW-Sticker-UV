@@ -9,9 +9,37 @@ import type { BezierPath } from './contour-worker-manager';
 import type { ResizeSettings, StrokeSettings, ShapeSettings } from './types';
 import { renderImageWithCrispQRs } from './qr';
 import { addGangSheetSpotColorsToPDF, type SpotPixelMapData } from './spot-color-vectors';
+import { cutContourMetadata, pdfName } from '@/lib/pdf-name';
 
 const MAX_CANVAS_DIM = 16384;
 const MAX_CANVAS_PIXELS = 268_435_456; // ~16384²; Chrome's hard limit
+
+function normalizedSpotName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+function validateGangSheetSpotNameCollisions(items: GangSheetItem[]): void {
+  const inkNamesByItem = items.map(item => {
+    const names = new Set<string>();
+    const white = item.spotColors?.find(color => color.spotWhite);
+    const gloss = item.spotColors?.find(color => color.spotGloss);
+    if (white) names.add(white.spotWhiteName || item.spotWhiteName || 'RDG_WHITE');
+    if (gloss) names.add(gloss.spotGlossName || item.spotGlossName || 'RDG_GLOSS');
+    return names;
+  });
+  for (let index = 0; index < items.length; index++) {
+    const cutName = normalizedSpotName(items[index].cutContourLabel);
+    for (let other = 0; other < items.length; other++) {
+      if (index === other) continue;
+      if ([...inkNamesByItem[other]].some(name => normalizedSpotName(name) === cutName)) {
+        throw new Error(
+          `Gang sheet export rejected: CutContour name "${items[index].cutContourLabel}" ` +
+          `for item "${items[index].id}" conflicts with a White/Varnish separation on item "${items[other].id}".`,
+        );
+      }
+    }
+  }
+}
 
 function clampCanvasDims(w: number, h: number): { w: number; h: number; scale: number } {
   let scale = 1;
@@ -64,6 +92,9 @@ export interface GangSheetItem {
    * — the same separations a single-design export would produce, just tiled.
    */
   spotColors?: SpotColorInput[];
+  /** Persisted at item level by older gang-sheet snapshots; per-color names win. */
+  spotWhiteName?: string;
+  spotGlossName?: string;
   /** Pixel-exact selection map (matches the on-canvas overlay) for spot color tracing. */
   spotPixelMap?: SpotPixelMapData;
 }
@@ -451,6 +482,7 @@ export async function downloadGangSheetPDF(
   settings: GangSheetSettings,
   placements: PlacedItem[]
 ): Promise<Blob> {
+  validateGangSheetSpotNameCollisions(items);
   const { sheetWidth, sheetHeight } = settings;
   const widthPts = sheetWidth * 72;
   const heightPts = sheetHeight * 72;
@@ -758,6 +790,9 @@ export async function downloadGangSheetPDF(
 
   const usedLabels = new Set<string>();
   for (const item of items) usedLabels.add(item.cutContourLabel);
+  const contourLabels = Array.from(usedLabels);
+  pdfDoc.setSubject(`Gang sheet with contour paths ${cutContourMetadata(contourLabels)}`);
+  pdfDoc.setKeywords([...contourLabels, 'spot color', 'cutting', 'vector']);
 
   const registerSeparation = (label: string) => {
     const tintFn = context.obj({
@@ -770,7 +805,7 @@ export async function downloadGangSheetPDF(
     const tintRef = context.register(tintFn);
     const sepCS = context.obj([
       PDFName.of('Separation'),
-      PDFName.of(label),
+      pdfName(label),
       PDFName.of('DeviceCMYK'),
       tintRef,
     ]);
@@ -783,7 +818,7 @@ export async function downloadGangSheetPDF(
         csDict = context.obj({});
         resources.set(PDFName.of('ColorSpace'), csDict);
       }
-      (csDict as PDFDict).set(PDFName.of(label), sepRef);
+      (csDict as PDFDict).set(pdfName(label), sepRef);
     }
   };
 
@@ -898,7 +933,11 @@ export async function downloadGangSheetPDF(
 
       return {
         imageElement: item.imageElement,
-        spotColors: item.spotColors!,
+        spotColors: item.spotColors!.map(color => ({
+          ...color,
+          spotWhiteName: color.spotWhiteName || item.spotWhiteName,
+          spotGlossName: color.spotGlossName || item.spotGlossName,
+        })),
         spotPixelMap: item.spotPixelMap,
         imageWidthInches,
         imageHeightInches,

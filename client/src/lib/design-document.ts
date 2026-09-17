@@ -1,4 +1,4 @@
-import type { SerializedDesign } from "@shared/design-document";
+import type { SerializedDesign, CutContourLabel } from "@shared/design-document";
 import type { ExtractedColor } from "@/lib/color-extractor";
 import type {
   StrokeSettings,
@@ -23,7 +23,7 @@ export interface SerializeDesignParams {
   shapeSettings: ShapeSettings;
   strokeMode: StrokeMode;
   stickerSize: StickerSize;
-  cutContourLabel: "CutContour" | "PerfCutContour" | "KissCut";
+  cutContourLabel: CutContourLabel;
   lockedContour: LockedContour | null;
   spotPreviewData: SpotPreviewData;
   segmentationData: SegmentationData;

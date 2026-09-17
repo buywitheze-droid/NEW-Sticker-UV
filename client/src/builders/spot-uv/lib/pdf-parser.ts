@@ -1,6 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import 'pdfjs-dist/build/pdf.worker.min.mjs';
 import { vectorPrintDpi, vectorExportMaxEdge } from './vector-raster-limits';
+import { pdfName, pdfNameToken, cutContourMetadata, readCutContourMetadata } from '@/lib/pdf-name';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -26,6 +27,13 @@ const CUT_SPOT_PATTERNS: { label: string; match: RegExp }[] = [
 // Order matters: PerfCut/KissCut checked first since "PerfCutContour" would otherwise also match the generic CutContour pattern.
 function matchCutSpotLabel(name: string): string | null {
   return CUT_SPOT_PATTERNS.find(p => p.match.test(name))?.label ?? null;
+}
+
+function decodePdfName(name: any): string {
+  if (name && typeof name.decodeText === 'function') return name.decodeText();
+  return String(name ?? '').replace(/^\/+/, '').replace(/#([0-9a-f]{2})/gi, (_, hex) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
 }
 
 export interface ParsedPDFData {
@@ -302,6 +310,11 @@ async function extractCutContourFromRawPDF(arrayBuffer: ArrayBuffer): Promise<PD
     // Check ColorSpace resources for Separation/CutContour
     const resources = page.node.Resources();
     const context = pdfDoc.context;
+    const subject = pdfDoc.getSubject();
+    const metadataLabels = readCutContourMetadata(subject);
+    const subjectSuggestsCutContour =
+      metadataLabels.length > 0 ||
+      (subject?.toLowerCase().includes('cutting machines') ?? false);
     
     if (resources) {
       const colorSpaces = resources.get(PDFName.of('ColorSpace'));
@@ -333,9 +346,11 @@ async function extractCutContourFromRawPDF(arrayBuffer: ArrayBuffer): Promise<PD
             if (firstStr === '/Separation') {
               const spotName = resolvedValue.get(1);
               if (spotName) {
-                const spotNameStr = spotName.toString();
+                const spotNameStr = decodePdfName(spotName);
                 console.log('[PDF Parser] Separation spot color:', spotNameStr);
-                const label = matchCutSpotLabel(spotNameStr);
+                const label = metadataLabels.find(candidate => candidate === spotNameStr)
+                  ?? matchCutSpotLabel(spotNameStr)
+                  ?? (subjectSuggestsCutContour && metadataLabels.length === 0 ? spotNameStr : null);
                 if (label) {
                   result.hasCutContour = true;
                   result.detectedLabel = label;
@@ -380,10 +395,14 @@ async function extractCutContourFromRawPDF(arrayBuffer: ArrayBuffer): Promise<PD
             if (resolvedValue instanceof PDFArray) {
               const firstStr = resolvedValue.get(0)?.toString() || '';
               if (firstStr === '/Separation') {
-                const spotName = resolvedValue.get(1)?.toString() || '';
-                if (matchCutSpotLabel(spotName)) {
+                const spotName = decodePdfName(resolvedValue.get(1));
+                if (metadataLabels.includes(spotName) || matchCutSpotLabel(spotName)) {
                   cutContourCSName = name.toString().replace('/', '');
                   console.log('[PDF Parser] Contour color space reference name:', cutContourCSName);
+                  break;
+                }
+                if (subjectSuggestsCutContour && spotName === result.detectedLabel) {
+                  cutContourCSName = name.toString().replace('/', '');
                   break;
                 }
               }
@@ -446,7 +465,7 @@ function extractPathFromContentStream(content: string, pageWidth: number, pageHe
   let inCutContour = false;
   
   // Parse content stream - tokenize properly handling numbers (including negatives, decimals)
-  const tokens = content.match(/-?\d+\.?\d*(?:[eE][+-]?\d+)?|\/[\w]+|[a-zA-Z\*]+/g) || [];
+  const tokens = content.match(/-?\d+\.?\d*(?:[eE][+-]?\d+)?|\/[^\s<>\[\]()]+|[a-zA-Z\*]+/g) || [];
   const stack: string[] = [];
   
   // Known operators that consume operands and should clear stack
@@ -628,7 +647,7 @@ export async function generatePDFWithVectorCutContour(
     
     const separationColorSpace = context.obj([
       PDFName.of('Separation'),
-      PDFName.of(cutContourLabel),
+      pdfName(cutContourLabel),
       PDFName.of('DeviceCMYK'),
       tintFunctionRef,
     ]);
@@ -642,11 +661,11 @@ export async function generatePDFWithVectorCutContour(
         colorSpaceDict = context.obj({});
         resources.set(PDFName.of('ColorSpace'), colorSpaceDict);
       }
-      (colorSpaceDict as any).set(PDFName.of(cutContourLabel), separationRef);
+      (colorSpaceDict as any).set(pdfName(cutContourLabel), separationRef);
     }
     
     // Build path operators
-    let pathOps = `/${cutContourLabel} CS 1 SCN\n0.5 w\n`;
+    let pathOps = `${pdfNameToken(cutContourLabel)} CS 1 SCN\n0.5 w\n`;
     
     for (const path of cutContourPoints) {
       if (path.length < 2) continue;
@@ -695,7 +714,7 @@ export async function generatePDFWithVectorCutContour(
   }
 
   pdfDoc.setTitle('PDF with CutContour');
-  pdfDoc.setSubject(`Contains ${cutContourLabel} spot color for cutting machines`);
+  pdfDoc.setSubject(`Contains ${cutContourLabel} spot color for cutting machines ${cutContourMetadata([cutContourLabel])}`);
   pdfDoc.setKeywords([cutContourLabel, 'spot color', 'cutting', 'vector']);
 
   const pdfBytes = await pdfDoc.save();

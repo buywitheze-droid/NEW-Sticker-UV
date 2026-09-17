@@ -8,6 +8,7 @@ import { hasVectorPrintSource, createVectorPrintSourceResolver } from "./vector-
 import { vectorPrintDpi } from "./vector-raster-limits";
 import { encodeCanvasToPng } from "@/lib/png-encoder";
 import { resolveSpotUvPrintImage } from "./print-preview";
+import { pdfName, pdfNameToken, cutContourMetadata } from "@/lib/pdf-name";
 
 // Re-rasterises a vector-backed (PDF/SVG) design at its placement size instead of embedding the capped import preview; falls back to the preview when not vector-backed or the re-render fails.
 async function resolveVectorPrintImage(
@@ -495,7 +496,7 @@ export function contourPointsToPDFPathOps(
   }
 
   let pathOps = 'q\n';
-  pathOps += `/${spotColorName} CS 1 SCN\n`;
+  pathOps += `${pdfNameToken(spotColorName)} CS 1 SCN\n`;
   pathOps += '0.5 w\n';
 
   const pts = pathPointsInches.map(p => ({ x: p.x * 72, y: p.y * 72 }));
@@ -633,7 +634,7 @@ export function bezierPathToPDFPathOps(
   }
 
   let pathOps = 'q\n';
-  pathOps += `/${spotColorName} CS 1 SCN\n`;
+  pathOps += `${pdfNameToken(spotColorName)} CS 1 SCN\n`;
   pathOps += '0.5 w\n';
 
   const sx = (v: number) => (v * 72).toFixed(4);
@@ -2575,7 +2576,7 @@ export async function downloadContourPDF(
     
     const separationColorSpace = context.obj([
       PDFName.of('Separation'),
-      PDFName.of(cutContourLabel),
+      pdfName(cutContourLabel),
       PDFName.of('DeviceCMYK'),
       tintFunctionRef,
     ]);
@@ -2588,7 +2589,7 @@ export async function downloadContourPDF(
         colorSpaceDict = context.obj({});
         resources.set(PDFName.of('ColorSpace'), colorSpaceDict);
       }
-      (colorSpaceDict as PDFDict).set(PDFName.of(cutContourLabel), separationRef);
+      (colorSpaceDict as PDFDict).set(pdfName(cutContourLabel), separationRef);
     }
     
     // Generate CutContour path operations — multiple paths for zero hero mode.
@@ -2650,7 +2651,7 @@ export async function downloadContourPDF(
       
       const lockedSepCS = context.obj([
         PDFName.of('Separation'),
-        PDFName.of(lockedContour.label),
+        pdfName(lockedContour.label),
         PDFName.of('DeviceCMYK'),
         lockedTintRef,
       ]);
@@ -2663,7 +2664,7 @@ export async function downloadContourPDF(
           colorSpaceDict = context.obj({});
           resources.set(PDFName.of('ColorSpace'), colorSpaceDict);
         }
-        (colorSpaceDict as PDFDict).set(PDFName.of(lockedContour.label), lockedSepRef);
+        (colorSpaceDict as PDFDict).set(pdfName(lockedContour.label), lockedSepRef);
       }
     }
     
@@ -2710,10 +2711,10 @@ export async function downloadContourPDF(
   const glossName = spotColors?.find(c => c.spotGloss)?.spotGlossName || 'RDG_GLOSS';
   
   pdfDoc.setTitle('Sticker with CutContour and Spot Colors');
-  pdfDoc.setSubject(singleArtboard 
-    ? `Single artboard with Design + CutContour + ${whiteName} + ${glossName}`
-    : `Page 1: Raster + CutContour, Page 2: ${whiteName}, Page 3: ${glossName}`);
-  pdfDoc.setKeywords(['CutContour', 'spot color', 'cutting', 'vector', whiteName, glossName]);
+  pdfDoc.setSubject(singleArtboard
+    ? `Single artboard with Design + ${cutContourLabel} + ${whiteName} + ${glossName} ${cutContourMetadata([cutContourLabel])}`
+    : `Page 1: Raster + ${cutContourLabel}, Page 2: ${whiteName}, Page 3: ${glossName} ${cutContourMetadata([cutContourLabel])}`);
+  pdfDoc.setKeywords([cutContourLabel, 'spot color', 'cutting', 'vector', whiteName, glossName]);
   
   const pdfBytes = await pdfDoc.save();
   const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
@@ -3063,7 +3064,7 @@ export async function generateContourPDFBase64(
     
     const separationColorSpace = context.obj([
       PDFName.of('Separation'),
-      PDFName.of(cutContourLabel),
+      pdfName(cutContourLabel),
       PDFName.of('DeviceCMYK'),
       tintFunctionRef,
     ]);
@@ -3076,7 +3077,7 @@ export async function generateContourPDFBase64(
         colorSpaceDict = context.obj({});
         resources.set(PDFName.of('ColorSpace'), colorSpaceDict);
       }
-      (colorSpaceDict as PDFDict).set(PDFName.of(cutContourLabel), separationRef);
+      (colorSpaceDict as PDFDict).set(pdfName(cutContourLabel), separationRef);
     }
     
     // For Zero Hero (strokeSettings.width === 0) prefer the bezier
@@ -3115,7 +3116,7 @@ export async function generateContourPDFBase64(
   }
   
   pdfDoc.setTitle('Sticker with CutContour');
-  pdfDoc.setSubject(`Contains ${cutContourLabel} spot color for cutting machines`);
+  pdfDoc.setSubject(`Contains ${cutContourLabel} spot color for cutting machines ${cutContourMetadata([cutContourLabel])}`);
   
   const pdfBytes = await pdfDoc.save();
   

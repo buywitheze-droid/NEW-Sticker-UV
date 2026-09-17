@@ -3,6 +3,7 @@ import { type SpotColorInput } from './contour-outline';
 import SpotColorWorker from './spot-color-worker?worker';
 import { offloadHealthy } from './offload-health';
 import { traceSpotColorsViaOffload } from './offload-client';
+import { pdfName, pdfNameToken } from './pdf-name';
 
 export interface SpotPixelMapData {
   pixelMap: Int16Array;
@@ -370,7 +371,7 @@ function spotColorPathsToPDFOps(
   if (validPaths.length === 0) return '';
 
   let compoundPath = 'q\n';
-  compoundPath += `/${spotColorName} cs 1 scn\n`;
+  compoundPath += `${pdfNameToken(spotColorName)} cs 1 scn\n`;
 
   for (const path of validPaths) {
     const pts = path.map(p => ({ x: p.x * 72, y: p.y * 72 }));
@@ -429,7 +430,7 @@ function addSpotColorRegionToPage(
 
   const separationColorSpace = context.obj([
     PDFName.of('Separation'),
-    PDFName.of(region.name),
+    pdfName(region.name),
     PDFName.of('DeviceCMYK'),
     tintFunctionRef,
   ]);
@@ -446,7 +447,7 @@ function addSpotColorRegionToPage(
     colorSpaceDict = context.obj({});
     (pageResources as PDFDict).set(PDFName.of('ColorSpace'), colorSpaceDict);
   }
-  (colorSpaceDict as PDFDict).set(PDFName.of(region.name), separationRef);
+  (colorSpaceDict as PDFDict).set(pdfName(region.name), separationRef);
 
   const pathOps = spotColorPathsToPDFOps(offsetPaths, region.name);
   console.log(`[SpotColor PDF] ${region.name}: ${region.paths.length} contours, ${pathOps.length} chars ops`);
@@ -604,7 +605,7 @@ export async function addGangSheetSpotColorsToPDF(
     const tintFnRef = context.register(tintFunction);
     const sepCS = context.obj([
       PDFName.of('Separation'),
-      PDFName.of(name),
+      pdfName(name),
       PDFName.of('DeviceCMYK'),
       tintFnRef,
     ]);
@@ -620,7 +621,7 @@ export async function addGangSheetSpotColorsToPDF(
       colorSpaceDict = context.obj({});
       (pageResources as PDFDict).set(PDFName.of('ColorSpace'), colorSpaceDict);
     }
-    (colorSpaceDict as PDFDict).set(PDFName.of(name), sepRef);
+    (colorSpaceDict as PDFDict).set(pdfName(name), sepRef);
   };
 
   // Build the path-ops for ONE separation name across every item &

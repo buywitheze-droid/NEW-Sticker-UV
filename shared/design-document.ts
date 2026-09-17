@@ -106,6 +106,11 @@ export const pdfContourSchema = z.object({
   points: z.array(z.array(pointSchema)),
 });
 
+// Spot names are user-facing production metadata. Keep the historical names
+// as defaults at call sites, but accept any non-empty (trimmed) custom name.
+export const cutContourLabelSchema = z.string().trim().min(1);
+export type CutContourLabel = z.infer<typeof cutContourLabelSchema>;
+
 export const designSourceSchema = z.object({
   assetId: z.number().int(),
   kind: z.enum(["image", "pdf"]),
@@ -122,7 +127,7 @@ export const serializedDesignSchemaV1 = z.object({
   shapeSettings: shapeSettingsSchema,
   strokeMode: z.enum(["none", "contour", "shape"]),
   stickerSize: z.number(),
-  cutContourLabel: z.enum(["CutContour", "PerfCutContour", "KissCut"]),
+  cutContourLabel: cutContourLabelSchema,
   lockedContour: lockedContourSchema.nullable().optional(),
   spotColors: spotColorsSchema,
   segmentation: segmentationSchema,

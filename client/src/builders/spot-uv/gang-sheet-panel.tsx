@@ -49,6 +49,7 @@ export default function GangSheetPanel({
   const [saveNameDialogOpen, setSaveNameDialogOpen] = useState(false);
   const [saveNameValue, setSaveNameValue] = useState("");
   const [fitWarning, setFitWarning] = useState<{ id: string; maxFit: number } | null>(null);
+  const [cutNameDrafts, setCutNameDrafts] = useState<Record<string, string>>({});
   const { toast } = useToast();
   const { isAuthenticated } = useAuth();
   const saveGangSheetMutation = useSaveGangSheet();
@@ -81,6 +82,39 @@ export default function GangSheetPanel({
   }, [items, settings.sheetWidth, settings.sheetHeight, settings.edgePadding]);
 
   const tooBigCount = fitInfo.tooBigIds.size;
+
+  const commitCutContourName = useCallback((item: GangSheetItem, raw: string) => {
+    const name = raw.trim();
+    if (!name) {
+      setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
+      return;
+    }
+    const spotNames = new Set(
+      items.flatMap(existing => [
+        existing.spotWhiteName,
+        existing.spotGlossName,
+        ...(existing.spotColors ?? []).flatMap(color => [color.spotWhiteName, color.spotGlossName]),
+      ])
+      .concat([
+        item.spotWhiteName,
+        item.spotGlossName,
+        ...(item.spotColors ?? []).flatMap(color => [color.spotWhiteName, color.spotGlossName]),
+      ])
+        .filter((value): value is string => !!value)
+        .map(value => value.toLowerCase())
+    );
+    if (spotNames.has(name.toLowerCase())) {
+      toast({ title: "Spot name already in use", description: "CutContour must be different from White and Varnish (Gloss).", variant: "destructive" });
+      setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
+      return;
+    }
+    onItemsChange(items.map(current => current.id === item.id ? { ...current, cutContourLabel: name } : current));
+    setCutNameDrafts(prev => {
+      const next = { ...prev };
+      delete next[item.id];
+      return next;
+    });
+  }, [items, onItemsChange, toast]);
 
   const applyQuantity = useCallback(
     (id: string, desired: number) => {
@@ -362,9 +396,21 @@ export default function GangSheetPanel({
                   <div className="text-xs font-medium text-[#e8eef6] truncate">
                     {item.resizeSettings.widthInches.toFixed(1)}" × {item.resizeSettings.heightInches.toFixed(1)}"
                   </div>
-                  <div className="text-[10px] text-[#94a3b8] truncate">
-                    {item.cutContourLabel}
-                  </div>
+                  <input
+                    type="text"
+                    aria-label="CutContour spot name"
+                    value={cutNameDrafts[item.id] ?? item.cutContourLabel}
+                    onChange={(e) => setCutNameDrafts(prev => ({ ...prev, [item.id]: e.target.value }))}
+                    onBlur={(e) => commitCutContourName(item, e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                      else if (e.key === "Escape") {
+                        setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
+                      }
+                    }}
+                    className="w-full h-5 px-1 text-[10px] text-[#94a3b8] border border-transparent rounded bg-transparent hover:border-white/15 focus:border-cyan-300 focus:bg-[#2d5a8a] focus:outline-none"
+                    title="Edit CutContour spot name"
+                  />
                 </div>
                 <div className="flex flex-col items-end gap-0.5">
                   <div className="flex items-center gap-1">

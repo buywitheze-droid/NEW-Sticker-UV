@@ -36,7 +36,8 @@ interface ControlsSectionProps {
   shapeSettings: ShapeSettings;
   stickerSize: StickerSize;
   // Current export label (may be a manual override of what was actually detected in the file) — compared against pdfCutContourInfo.detectedLabel to explain any mismatch.
-  cutContourLabel?: 'CutContour' | 'PerfCutContour' | 'KissCut';
+  cutContourLabel?: string;
+  onCutContourLabelChange?: (label: string) => void;
   onStrokeChange: (settings: Partial<StrokeSettings>) => void;
   onResizeChange: (settings: Partial<ResizeSettings>) => void;
   onShapeChange: (settings: Partial<ShapeSettings>) => void;
@@ -115,6 +116,7 @@ export default function ControlsSection({
   shapeSettings,
   stickerSize,
   cutContourLabel,
+  onCutContourLabelChange,
   onStrokeChange,
   onResizeChange,
   onShapeChange,
@@ -163,6 +165,7 @@ export default function ControlsSection({
   const [editingGlossName, setEditingGlossName] = useState(false);
   const [tempWhiteName, setTempWhiteName] = useState("");
   const [tempGlossName, setTempGlossName] = useState("");
+  const [cutContourDraft, setCutContourDraft] = useState<string | null>(null);
   const [expandedColorIndex, setExpandedColorIndex] = useState<number | null>(null);
   const [showOutlineType, setShowOutlineType] = useState(true);
   const [showShapeAdvanced, setShowShapeAdvanced] = useState(false);
@@ -172,6 +175,19 @@ export default function ControlsSection({
 
   const canDownload = !!imageInfo;
   const extractionRef = useRef<ColorExtractionResult | null>(null);
+
+  const commitSpotName = useCallback((kind: "white" | "gloss", value: string) => {
+    const trimmed = value.trim();
+    const candidate = trimmed;
+    const other = kind === "white" ? spotGlossName : spotWhiteName;
+    // Never commit an empty separation name; retain the last valid value.
+    if (!candidate) return;
+    if ([other, cutContourLabel].filter(Boolean).some(name => name!.toLowerCase() === candidate.toLowerCase())) {
+      toast({ title: "Spot name already in use", description: "White, Varnish (Gloss), and CutContour must have unique names.", variant: "destructive" });
+      return;
+    }
+    (kind === "white" ? setSpotWhiteName : setSpotGlossName)(candidate);
+  }, [cutContourLabel, spotGlossName, spotWhiteName, toast]);
 
   const fillPalette = (() => {
     const base = ['#FFFFFF', '#000000', '#FF0000', '#0066FF', '#00AA00'];
@@ -195,6 +211,7 @@ export default function ControlsSection({
     // Also restore custom names — otherwise this component's own defaults overwrite them right back.
     if (spotColorRestore.spotWhiteName) setSpotWhiteName(spotColorRestore.spotWhiteName);
     if (spotColorRestore.spotGlossName) setSpotGlossName(spotColorRestore.spotGlossName);
+    if (spotColorRestore.colors.length === 0) return;
     setExtractedColors(prev => {
       if (prev.length === 0 && spotColorRestore.colors.length === 0) return prev;
       return spotColorRestore.colors.map((restored, i) => {
@@ -422,10 +439,10 @@ export default function ControlsSection({
         if (strokeSettings.enabled) {
           const workerManager = getContourWorkerManager();
           const cachedData = workerManager.getCachedContourData();
-          const result = await generateContourPDFBase64(imageInfo.image, strokeSettings, resizeSettings, cachedData || undefined, undefined, imageInfo);
+          const result = await generateContourPDFBase64(imageInfo.image, strokeSettings, resizeSettings, cachedData || undefined, cutContourLabel || "CutContour", imageInfo);
           pdfBase64 = result || "";
         } else if (shapeSettings.enabled) {
-          const result = await generateShapePDFBase64(imageInfo.image, shapeSettings, resizeSettings);
+          const result = await generateShapePDFBase64(imageInfo.image, shapeSettings, resizeSettings, cutContourLabel || "CutContour");
           pdfBase64 = result || "";
         }
       }
@@ -1357,25 +1374,52 @@ export default function ControlsSection({
                 </>
               )}
 
-              {extractedColors.some(c => c.spotWhite || c.spotGloss) && (
+              {(extractedColors.some(c => c.spotWhite || c.spotGloss) || !!onCutContourLabelChange) && (
               <div className="text-[10px] text-gray-400 pt-2 border-t border-gray-200 space-y-1">
+                <div className="flex items-center gap-1">
+                  <span>CutContour →</span>
+                  <input
+                    type="text"
+                    aria-label="CutContour spot name"
+                    list="components-cut-contour-presets"
+                    value={cutContourDraft ?? cutContourLabel ?? "CutContour"}
+                    onChange={(e) => setCutContourDraft(e.target.value)}
+                    onBlur={() => {
+                      if (cutContourDraft !== null) onCutContourLabelChange?.(cutContourDraft);
+                      setCutContourDraft(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                      else if (e.key === "Escape") {
+                        setCutContourDraft(null);
+                      }
+                    }}
+                    className="w-28 px-1 py-0.5 text-[10px] border border-gray-300 rounded bg-white text-gray-700"
+                  />
+                  <datalist id="components-cut-contour-presets">
+                    <option value="CutContour" />
+                    <option value="PerfCutContour" />
+                    <option value="KissCut" />
+                  </datalist>
+                </div>
                 {extractedColors.some(c => c.spotWhite) && <div className="flex items-center gap-1">
                   <span>White →</span>
                   {editingWhiteName ? (
                     <div className="flex items-center gap-1">
                       <input
                         type="text"
+                        aria-label="White spot name"
                         value={tempWhiteName}
                         onChange={(e) => setTempWhiteName(e.target.value)}
                         className="w-24 px-1 py-0.5 text-[10px] border border-gray-300 rounded bg-white text-gray-700"
                         autoFocus
                         onBlur={() => {
-                          setSpotWhiteName(tempWhiteName || "RDG_WHITE");
+                          commitSpotName("white", tempWhiteName);
                           setEditingWhiteName(false);
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
-                            setSpotWhiteName(tempWhiteName || "RDG_WHITE");
+                            commitSpotName("white", tempWhiteName);
                             setEditingWhiteName(false);
                           } else if (e.key === 'Escape') {
                             setEditingWhiteName(false);
@@ -1384,7 +1428,7 @@ export default function ControlsSection({
                       />
                       <button
                         onClick={() => {
-                          setSpotWhiteName(tempWhiteName || "RDG_WHITE");
+                          commitSpotName("white", tempWhiteName);
                           setEditingWhiteName(false);
                         }}
                         className="p-0.5 hover:bg-amber-100 rounded"
@@ -1409,7 +1453,7 @@ export default function ControlsSection({
                           setEditingWhiteName(true);
                         }}
                         className="p-0.5 hover:bg-gray-200 rounded"
-                        title="Edit name"
+                        title="Edit White spot name"
                       >
                         <Pencil className="w-3 h-3 text-gray-500" />
                       </button>
@@ -1417,22 +1461,23 @@ export default function ControlsSection({
                   )}
                 </div>}
                 {extractedColors.some(c => c.spotGloss) && <div className="flex items-center gap-1">
-                  <span>Gloss →</span>
+                  <span>Varnish (Gloss) →</span>
                   {editingGlossName ? (
                     <div className="flex items-center gap-1">
                       <input
                         type="text"
+                        aria-label="Varnish (Gloss) spot name"
                         value={tempGlossName}
                         onChange={(e) => setTempGlossName(e.target.value)}
                         className="w-24 px-1 py-0.5 text-[10px] border border-gray-300 rounded bg-white text-gray-700"
                         autoFocus
                         onBlur={() => {
-                          setSpotGlossName(tempGlossName || "RDG_GLOSS");
+                          commitSpotName("gloss", tempGlossName);
                           setEditingGlossName(false);
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
-                            setSpotGlossName(tempGlossName || "RDG_GLOSS");
+                            commitSpotName("gloss", tempGlossName);
                             setEditingGlossName(false);
                           } else if (e.key === 'Escape') {
                             setEditingGlossName(false);
@@ -1441,7 +1486,7 @@ export default function ControlsSection({
                       />
                       <button
                         onClick={() => {
-                          setSpotGlossName(tempGlossName || "RDG_GLOSS");
+                          commitSpotName("gloss", tempGlossName);
                           setEditingGlossName(false);
                         }}
                         className="p-0.5 hover:bg-amber-100 rounded"
@@ -1466,7 +1511,7 @@ export default function ControlsSection({
                           setEditingGlossName(true);
                         }}
                         className="p-0.5 hover:bg-gray-200 rounded"
-                        title="Edit name"
+                        title="Edit Varnish (Gloss) spot name"
                       >
                         <Pencil className="w-3 h-3 text-gray-500" />
                       </button>

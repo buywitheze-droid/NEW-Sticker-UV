@@ -3,9 +3,9 @@ name: Auto spot selection contract
 description: Why automatic spot generation preserves existing selection and print conventions.
 ---
 
-Auto Spot Layers changes how existing spot selections are made, not the spot names or ink format.
+Auto Spot Layers changes how existing spot selections are made, not the currently configured spot names or ink format. Dedicated naming controls may edit those names.
 
-**Why:** The user explicitly clarified that their existing spot names remain in use and only the selection method should change. Variable ink strength and printer-specific layering are outside that approval.
+**Why:** The user explicitly limited automatic selection to selection changes, then separately requested restored White/Varnish name editing and custom CutContour names throughout the app. Preserving names in Auto mode does not mean locking the naming controls. Variable ink strength and printer-specific layering remain outside that approval.
 
 **How to apply:** Generate binary selections over the existing editable color/region domains. Show the final selected areas before Apply and preserve manual refinement. Describe tonal relief as brightness-guided, not inferred 3D depth.
 

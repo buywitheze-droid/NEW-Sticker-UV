@@ -305,7 +305,8 @@ export function downloadVectorStroke(
   canvas: HTMLCanvasElement,
   filename: string,
   format: VectorFormat = 'png',
-  vectorPaths?: { paths: string[], bounds: { width: number; height: number } }
+  vectorPaths?: { paths: string[], bounds: { width: number; height: number } },
+  spotColorName: string = 'CutContour'
 ): void {
   const baseFilename = filename.replace(/\.[^/.]+$/, "");
   
@@ -317,7 +318,7 @@ export function downloadVectorStroke(
       downloadAsEPS(vectorPaths, `${baseFilename}.eps`);
       break;
     case 'svg':
-      downloadAsSVG(vectorPaths, `${baseFilename}.svg`);
+      downloadAsSVG(vectorPaths, `${baseFilename}.svg`, spotColorName);
       break;
     default:
       // PNG fallback
@@ -458,7 +459,8 @@ function downloadAsEPS(
 
 function downloadAsSVG(
   vectorPaths?: { paths: string[], bounds: { width: number; height: number } },
-  filename: string = 'cutcontour.svg'
+  filename: string = 'cutcontour.svg',
+  spotColorName: string = 'CutContour'
 ): void {
   if (!vectorPaths || vectorPaths.paths.length === 0) {
     console.warn('No vector paths available for SVG export');
@@ -467,9 +469,17 @@ function downloadAsSVG(
   
   const { paths, bounds } = vectorPaths;
   
+  const escapedSpotColorName = spotColorName.replace(/[&<>"']/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&apos;',
+  }[character] as string));
+
   let svgContent = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${bounds.width}" height="${bounds.height}" viewBox="0 0 ${bounds.width} ${bounds.height}">
-  <g fill="none" stroke="#FF00FF" stroke-width="1" stroke-linejoin="round" stroke-linecap="round">
+  <g data-spot-name="${escapedSpotColorName}" fill="none" stroke="#FF00FF" stroke-width="1" stroke-linejoin="round" stroke-linecap="round">
 `;
   
   paths.forEach(pathString => {

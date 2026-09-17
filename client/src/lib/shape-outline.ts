@@ -2,6 +2,7 @@ import type { ShapeSettings, ResizeSettings } from "@/lib/types";
 import { PDFDocument, PDFName, PDFArray, PDFDict, type PDFImage } from 'pdf-lib';
 import { cropImageToContent } from './image-crop';
 import { simplifyPathForPDF, buildSmoothPdfPath, type SpotColorInput } from './contour-outline';
+import { pdfName, pdfNameToken, cutContourMetadata } from './pdf-name';
 import { addSpotColorVectorsToPDF, type SpotPixelMapData } from './spot-color-vectors';
 
 function rotatePoint(px: number, py: number, cx: number, cy: number, deg: number): { x: number; y: number } {
@@ -449,19 +450,19 @@ export async function downloadShapePDF(
   const tintFunction = context.obj({ FunctionType: 2, Domain: [0, 1], C0: [0, 0, 0, 0], C1: [0, 1, 0, 0], N: 1 });
   const tintFunctionRef = context.register(tintFunction);
   const separationColorSpace = context.obj([
-    PDFName.of('Separation'), PDFName.of(cutContourLabel), PDFName.of('DeviceCMYK'), tintFunctionRef
+    PDFName.of('Separation'), pdfName(cutContourLabel), PDFName.of('DeviceCMYK'), tintFunctionRef
   ]);
   const separationRef = context.register(separationColorSpace);
   if (resources) {
     let colorSpaceDict = resources.get(PDFName.of('ColorSpace'));
     if (!colorSpaceDict) { colorSpaceDict = context.obj({}); resources.set(PDFName.of('ColorSpace'), colorSpaceDict); }
-    (colorSpaceDict as PDFDict).set(PDFName.of(cutContourLabel), separationRef);
+    (colorSpaceDict as PDFDict).set(pdfName(cutContourLabel), separationRef);
   }
 
   // CutContour path
   let pathOps = 'q\n';
   pathOps += pdfRotationTransform(cx, cy, rotation);
-  pathOps += `/${cutContourLabel} CS 1 SCN\n0.5 w\n`;
+  pathOps += `${pdfNameToken(cutContourLabel)} CS 1 SCN\n0.5 w\n`;
   pathOps += generateShapePDFPath(shapeSettings.type, cx, cy, shapeWidthPts, shapeHeightPts, widthPts, heightPts, cornerRadiusPts);
   pathOps += 'h S\nQ\n';
   appendContent(pathOps);
@@ -499,7 +500,7 @@ export async function downloadShapePDF(
       
       const lcSepCS = context.obj([
         PDFName.of('Separation'),
-        PDFName.of(lockedContour.label),
+        pdfName(lockedContour.label),
         PDFName.of('DeviceCMYK'),
         lcTintRef,
       ]);
@@ -512,7 +513,7 @@ export async function downloadShapePDF(
           lcColorSpaceDict = context.obj({});
           lcResources.set(PDFName.of('ColorSpace'), lcColorSpaceDict);
         }
-        (lcColorSpaceDict as PDFDict).set(PDFName.of(lockedContour.label), lcSepRef);
+        (lcColorSpaceDict as PDFDict).set(pdfName(lockedContour.label), lcSepRef);
       }
     }
     
@@ -520,7 +521,7 @@ export async function downloadShapePDF(
     for (const mappedPoints of allMappedPaths) {
       const simplified = simplifyPathForPDF(mappedPoints, 0.01);
       lcPathOps += 'q\n';
-      lcPathOps += `/${lockedContour.label} CS 1 SCN\n`;
+      lcPathOps += `${pdfNameToken(lockedContour.label)} CS 1 SCN\n`;
       lcPathOps += '0.5 w\n';
       lcPathOps += buildSmoothPdfPath(simplified, true);
       lcPathOps += 'S\n';
@@ -557,10 +558,10 @@ export async function downloadShapePDF(
   const glossName = spotColors?.find(c => c.spotGloss)?.spotGlossName || 'RDG_GLOSS';
   
   pdfDoc.setTitle('Shape with CutContour and Spot Colors');
-  pdfDoc.setSubject(singleArtboard 
-    ? `Single artboard with Design + CutContour + ${whiteName} + ${glossName}`
-    : `Contains CutContour and spot color layers for cutting machines`);
-  pdfDoc.setKeywords(['CutContour', 'spot color', 'cutting', 'vector', 'shape']);
+  pdfDoc.setSubject(singleArtboard
+    ? `Single artboard with Design + ${cutContourLabel} + ${whiteName} + ${glossName} ${cutContourMetadata([cutContourLabel])}`
+    : `Contains ${cutContourLabel} and spot color layers for cutting machines ${cutContourMetadata([cutContourLabel])}`);
+  pdfDoc.setKeywords([cutContourLabel, 'spot color', 'cutting', 'vector', 'shape']);
   
   const pdfBytes = await pdfDoc.save();
   const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
@@ -618,24 +619,24 @@ export async function generateShapePDFBase64(
   const tintFunction = context.obj({ FunctionType: 2, Domain: [0, 1], C0: [0, 0, 0, 0], C1: [0, 1, 0, 0], N: 1 });
   const tintFunctionRef = context.register(tintFunction);
   const separationColorSpace = context.obj([
-    PDFName.of('Separation'), PDFName.of(cutContourLabel), PDFName.of('DeviceCMYK'), tintFunctionRef
+    PDFName.of('Separation'), pdfName(cutContourLabel), PDFName.of('DeviceCMYK'), tintFunctionRef
   ]);
   const separationRef = context.register(separationColorSpace);
   if (resources) {
     let colorSpaceDict = resources.get(PDFName.of('ColorSpace'));
     if (!colorSpaceDict) { colorSpaceDict = context.obj({}); resources.set(PDFName.of('ColorSpace'), colorSpaceDict); }
-    (colorSpaceDict as PDFDict).set(PDFName.of(cutContourLabel), separationRef);
+    (colorSpaceDict as PDFDict).set(pdfName(cutContourLabel), separationRef);
   }
 
   let pathOps = 'q\n';
   pathOps += pdfRotationTransform(cx, cy, rotation);
-  pathOps += `/${cutContourLabel} CS 1 SCN\n0.5 w\n`;
+  pathOps += `${pdfNameToken(cutContourLabel)} CS 1 SCN\n0.5 w\n`;
   pathOps += generateShapePDFPath(shapeSettings.type, cx, cy, widthPts, heightPts, widthPts, heightPts, cornerRadiusPts);
   pathOps += 'h S\nQ\n';
   appendContent(pathOps);
 
   pdfDoc.setTitle('Shape with CutContour');
-  pdfDoc.setSubject(`Contains ${cutContourLabel} spot color for cutting machines`);
+  pdfDoc.setSubject(`Contains ${cutContourLabel} spot color for cutting machines ${cutContourMetadata([cutContourLabel])}`);
 
   const pdfBytes = await pdfDoc.save();
   let binary = '';

@@ -61,6 +61,7 @@ export default function GangSheetPanel({
   const [saveNameDialogOpen, setSaveNameDialogOpen] = useState(false);
   const [saveNameValue, setSaveNameValue] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [cutNameDrafts, setCutNameDrafts] = useState<Record<string, string>>({});
 
   const packResult: PackResult = useMemo(
     () => packGangSheet(items, settings),
@@ -96,6 +97,39 @@ export default function GangSheetPanel({
 
   const tooBigCount = fitInfo.tooBigIds.size;
   const tooBigList = items.filter((i) => fitInfo.tooBigIds.has(i.id));
+
+  const commitCutContourName = useCallback((item: GangSheetItem, raw: string) => {
+    const name = raw.trim();
+    if (!name) {
+      setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
+      return;
+    }
+    const spotNames = new Set(
+      items.flatMap(existing => [
+        existing.spotWhiteName,
+        existing.spotGlossName,
+        ...(existing.spotColors ?? []).flatMap(color => [color.spotWhiteName, color.spotGlossName]),
+      ])
+      .concat([
+        item.spotWhiteName,
+        item.spotGlossName,
+        ...(item.spotColors ?? []).flatMap(color => [color.spotWhiteName, color.spotGlossName]),
+      ])
+        .filter((value): value is string => !!value)
+        .map(value => value.toLowerCase())
+    );
+    if (spotNames.has(name.toLowerCase())) {
+      toast({ title: "Spot name already in use", description: "CutContour must be different from White and Varnish (Gloss).", variant: "destructive" });
+      setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
+      return;
+    }
+    onItemsChange(items.map(current => current.id === item.id ? { ...current, cutContourLabel: name } : current));
+    setCutNameDrafts(prev => {
+      const next = { ...prev };
+      delete next[item.id];
+      return next;
+    });
+  }, [items, onItemsChange, toast]);
 
   // Preload thumbnails as images so they're ready for canvas drawing
   useEffect(() => {
@@ -892,11 +926,27 @@ export default function GangSheetPanel({
                         </span>
                       )}
                     </div>
-                    <div className="text-[10px] text-gray-400">
-                      {item.cutContourLabel} &middot;{" "}
-                      {item.strokeSettings.width === 0
-                        ? "Zero Hero"
-                        : `${item.strokeSettings.width.toFixed(2)}" margin`}
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        aria-label="CutContour spot name"
+                        value={cutNameDrafts[item.id] ?? item.cutContourLabel}
+                        onChange={(e) => setCutNameDrafts(prev => ({ ...prev, [item.id]: e.target.value }))}
+                        onBlur={(e) => commitCutContourName(item, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                          else if (e.key === "Escape") {
+                            setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
+                          }
+                        }}
+                        className="w-24 h-5 px-1 text-[10px] text-gray-400 border border-transparent rounded bg-transparent hover:border-gray-200 focus:border-emerald-400 focus:bg-white focus:outline-none"
+                        title="Edit CutContour spot name"
+                      />
+                      <span className="text-[10px] text-gray-400">&middot;{" "}
+                        {item.strokeSettings.width === 0
+                          ? "Zero Hero"
+                          : `${item.strokeSettings.width.toFixed(2)}" margin`}
+                      </span>
                     </div>
                   </div>
 
