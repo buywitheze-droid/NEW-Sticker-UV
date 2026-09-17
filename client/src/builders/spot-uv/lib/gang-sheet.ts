@@ -32,7 +32,6 @@ function validateGangSheetSpotNameCollisions(items: GangSheetItem[]): void {
   for (let index = 0; index < items.length; index++) {
     const cutName = normalizedSpotName(items[index].cutContourLabel);
     for (let other = 0; other < items.length; other++) {
-      if (index === other) continue;
       if ([...inkNamesByItem[other]].some(name => normalizedSpotName(name) === cutName)) {
         throw new Error(
           `Gang sheet export rejected: CutContour name "${items[index].cutContourLabel}" ` +
@@ -469,7 +468,10 @@ function remapBezierPathToSheet(
 // ─── Gang Sheet PDF Export ───
 
 /** Export one saved design, without repacking or retracing its locked outline. */
-export async function downloadGangSheetItemPDF(item: GangSheetItem): Promise<Blob> {
+export async function downloadGangSheetItemPDF(
+  item: GangSheetItem,
+  singleArtboard: boolean = false,
+): Promise<Blob> {
   const { widthInches: width, heightInches: height } = item.contourData;
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     throw new Error("This design has invalid saved dimensions and cannot be downloaded.");
@@ -480,6 +482,7 @@ export async function downloadGangSheetItemPDF(item: GangSheetItem): Promise<Blo
     { sheetWidth: width, sheetHeight: height, gap: 0, edgePadding: 0 },
     [{ itemId: item.id, instanceIndex: 0, x: 0, y: 0, width, height, rotated: false }],
     { filename: `design_${safeId}_${width.toFixed(2)}x${height.toFixed(2)}.pdf`, singleDesign: true },
+    singleArtboard,
   );
 }
 
@@ -488,8 +491,13 @@ export async function downloadGangSheetPDF(
   items: GangSheetItem[],
   settings: GangSheetSettings,
   placements: PlacedItem[],
-  options: { filename?: string; singleDesign?: boolean } = {},
+  optionsOrSingleArtboard: { filename?: string; singleDesign?: boolean } | boolean = {},
+  singleArtboard: boolean = false,
 ): Promise<Blob> {
+  // Accept a boolean in the historical fourth-argument slot as well as the
+  // active builder's options object, so existing callers remain source-compatible.
+  const options = typeof optionsOrSingleArtboard === "boolean" ? {} : optionsOrSingleArtboard;
+  if (typeof optionsOrSingleArtboard === "boolean") singleArtboard = optionsOrSingleArtboard;
   validateGangSheetSpotNameCollisions(items);
   const { sheetWidth, sheetHeight } = settings;
   const widthPts = sheetWidth * 72;
@@ -880,10 +888,8 @@ export async function downloadGangSheetPDF(
   // paths get scaled to the contour bounds (typically larger than the
   // image) and offset to the contour origin instead of the image origin.
   //
-  // Multi-page emission, matching the single-design `singleArtboard=false`
-  // convention: page 1 keeps the design + cuts, then one NEW page per
-  // separation label (RDG_WHITE / RDG_GLOSS / fluor*) is added to the same
-  // PDF document containing only that separation's tiled paths.
+  // Standard exports keep one page per production plate. Single Artboard
+  // exports register and draw every requested plate on the base artwork page.
   const spotItems = items
     .filter(item => item.spotColors && item.spotColors.length > 0)
     .map(item => {
@@ -913,7 +919,38 @@ export async function downloadGangSheetPDF(
 
   if (spotItems.length > 0) {
     try {
-      await addGangSheetSpotColorsToPDF(pdfDoc, page, spotItems, sheetWidth, sheetHeight, true);
+      if (singleArtboard) {
+        // Spot fills share the process-art page in this mode, so explicitly
+        // overprint instead of knocking the artwork out beneath each mask.
+        const overprintState = context.obj({
+          Type: PDFName.of('ExtGState'),
+          OP: true,
+          op: true,
+          OPM: 1,
+        });
+        const overprintRef = context.register(overprintState);
+        const resources = page.node.Resources();
+        if (resources) {
+          let states = resources.get(PDFName.of('ExtGState'));
+          if (!states) {
+            states = context.obj({});
+            resources.set(PDFName.of('ExtGState'), states);
+          }
+          (states as PDFDict).set(PDFName.of('GS_GangSpotOverprint'), overprintRef);
+        }
+        const stateRef = context.register(context.stream('/GS_GangSpotOverprint gs\n'));
+        const contents = page.node.Contents();
+        if (contents instanceof PDFArray) contents.push(stateRef);
+        else if (contents) page.node.set(PDFName.of('Contents'), context.obj([contents, stateRef]));
+      }
+      await addGangSheetSpotColorsToPDF(
+        pdfDoc,
+        page,
+        spotItems,
+        sheetWidth,
+        sheetHeight,
+        !singleArtboard,
+      );
     } catch (err) {
       console.error('[GangSheet] Spot color emission failed:', err);
       // A PDF missing requested production plates is not a successful export.

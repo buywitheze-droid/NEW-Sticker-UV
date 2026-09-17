@@ -497,6 +497,49 @@ test("all-tagged White and Gloss snapshots produce actual tiled separation pages
   assert.deepEqual(itemSnapshot(item), before, "spot snapshots must survive multi-page export");
 });
 
+test("Single Artboard Download keeps artwork, cut, White and Gloss on one aligned page", async () => {
+  const canvas = makeSpotArt();
+  const contour = await contourFrom(canvas);
+  const spotColors = makeWhiteGlossColors().map(color => ({
+    ...color,
+    spotWhiteName: "ShopWhite",
+    spotGlossName: "ShopGloss",
+  }));
+  const item = makeItem("single-artboard", canvas, contour, 2, {
+    spotColors,
+    cutContourLabel: "KissCut",
+  });
+  const before = itemSnapshot(item);
+  const settings = { sheetWidth: 1.5, sheetHeight: 2.5, gap: 0.25, edgePadding: 0.1 };
+  const pack = gangSheet.packGangSheet([item], settings);
+  assert.equal(pack.overflow, 0);
+  // Exercise both affine branches without changing the packer's algorithm.
+  const placements = pack.placements.map((placement, index) => index === 0
+    ? { ...placement, width: placement.height, height: placement.width, rotated: true }
+    : placement);
+  assert.ok(placements.some(placement => placement.rotated));
+
+  const blob = await quiet(() =>
+    gangSheet.downloadGangSheetPDF([item], settings, placements, true),
+  );
+  const pdf = await PDFDocument.load(new Uint8Array(await blob.arrayBuffer()));
+  assert.equal(pdf.getPageCount(), 1, "all requested plates belong on the base artwork page");
+  const page = pdf.getPages()[0];
+  const names = separationNames(pdf, page);
+  assert.ok(names.includes("KissCut"), JSON.stringify(names));
+  assert.ok(names.includes("ShopWhite"), JSON.stringify(names));
+  assert.ok(names.includes("ShopGloss"), JSON.stringify(names));
+
+  const content = pageContent(pdf, page);
+  assert.match(content, /\/KissCut\s+CS\s+1\s+SCN/, "cut contour operations remain on the base page");
+  assert.match(content, /\/GS_GangSpotOverprint\s+gs/, "single-page spot fills explicitly overprint the artwork");
+  assert.match(content, /\/ShopWhite\s+cs\s+1\s+scn/, "custom White fill operations remain on the base page");
+  assert.match(content, /\/ShopGloss\s+cs\s+1\s+scn/, "custom Gloss fill operations remain on the base page");
+  assert.ok((content.match(/\/ShopWhite\s+cs\s+1\s+scn/g) ?? []).length >= 2, "White mask is tiled at every placement");
+  assert.ok((content.match(/\/ShopGloss\s+cs\s+1\s+scn/g) ?? []).length >= 2, "Gloss mask is tiled at every placement");
+  assert.deepEqual(itemSnapshot(item), before, "single-artboard export must not mutate spot or contour snapshots");
+});
+
 test("requested separation failure rejects before creating a download", async () => {
   const canvas = makeSpotArt();
   const contour = await contourFrom(canvas);
@@ -639,4 +682,22 @@ test("saved item PDF emits White and Gloss plates and blocks download on a missi
   }
   assert.equal(clickedLinks, 0, "a missing production plate must prevent link download");
   assert.equal(downloadedFilenames.length, 0);
+});
+
+test("saved item Single Artboard Download emits one page without changing standard mode", async () => {
+  const contour = makeSavedContour();
+  const item = makeItem("single-saved", makeSpotArt(), contour, 3, {
+    spotColors: makeWhiteGlossColors(),
+    cutContourLabel: "SavedCut",
+  });
+
+  clearCapturedDownloads();
+  const blob = await quiet(() => gangSheet.downloadGangSheetItemPDF(item, true));
+  const pdf = await PDFDocument.load(new Uint8Array(await blob.arrayBuffer()));
+  assert.equal(pdf.getPageCount(), 1);
+  const names = separationNames(pdf, pdf.getPages()[0]);
+  assert.ok(names.includes("SavedCut"), JSON.stringify(names));
+  assert.ok(names.includes("RDG_WHITE"), JSON.stringify(names));
+  assert.ok(names.includes("RDG_GLOSS"), JSON.stringify(names));
+  assert.equal(clickedLinks, 1);
 });

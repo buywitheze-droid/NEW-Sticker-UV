@@ -2038,15 +2038,18 @@ export default function ImageEditor({
   return (
     <>
     {isReadOnlyView ? (
-      <div className="mb-3 flex items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
         <span className="text-xs text-amber-900">
           Viewing <strong>{readOnlyOwnerEmail}</strong>&rsquo;s design — read-only
         </span>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2">
+          {[false, true].map((singleArtboard) => (
           <button
+            key={String(singleArtboard)}
             type="button"
             onClick={() => {
               const colors = spotPreviewData.colors.map((c) => ({
+                ...c,
                 hex: c.hex,
                 rgb: { ...c.rgb },
                 spotWhite: c.spotWhite,
@@ -2058,13 +2061,14 @@ export default function ImageEditor({
                 spotFluorG: c.spotFluorG,
                 spotFluorOrange: c.spotFluorOrange,
               }));
-              void handleDownload("standard", "pdf", colors);
+              void handleDownload("standard", "pdf", colors, singleArtboard);
             }}
             disabled={!imageInfo || isProcessing}
-            className="text-xs px-3 py-1.5 rounded-md border border-amber-300 bg-white text-amber-900 hover:bg-amber-100 transition-colors disabled:opacity-50"
+            className={`text-xs px-3 py-1.5 rounded-md transition-colors disabled:opacity-50 ${singleArtboard ? "bg-[#4dff80] text-[#05321a] hover:bg-[#2ee66a] font-semibold" : "border border-amber-300 bg-white text-amber-900 hover:bg-amber-100"}`}
           >
-            {isProcessing ? "Downloading…" : "Download"}
+            {isProcessing ? "Downloading…" : singleArtboard ? "Single Artboard Download" : "Download"}
           </button>
+          ))}
           <button
             type="button"
             onClick={handleEditAsOwnFromView}

@@ -1555,7 +1555,6 @@ export default function ControlsSection({
 
           {canDownload && imageInfo && (
             <Button
-              variant="outline"
               onClick={() => onDownload('standard', 'pdf', extractedColors.map(c => ({
                 ...c,
                 spotWhiteName,
@@ -1566,10 +1565,11 @@ export default function ControlsSection({
                 spotFluorOrange: false,
               })), true)}
               disabled={isProcessing}
-              className="w-full h-9 border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg text-sm"
+              title="Download artwork, cutting lines, White, and Varnish on one PDF artboard"
+              className="w-full h-11 bg-[#4dff80] hover:bg-[#2ee66a] text-[#05321a] rounded-lg shadow-lg font-semibold"
             >
               <Download className="w-4 h-4 mr-2" />
-              All Layers in 1 PDF
+              {isProcessing ? "Processing..." : "Single Artboard Download"}
             </Button>
           )}
         </div>

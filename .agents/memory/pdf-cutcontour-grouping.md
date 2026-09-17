@@ -19,6 +19,11 @@ select/move together, which is what was requested.
   naive preflight tools that only scan page-level `/ColorSpace` may not list the
   spot plate. First suspect if a cut workflow can't find the plate.
 - Keep production spot separations (white/gloss) OUT of the art group.
+- Single-artboard output means sharing one PDF page, not flattening the spot
+  separations into the artwork or changing this grouping rule.
+  **Why:** The user requested a combined-artboard alternative to the standard
+  separate-artboard download, including gang sheets; production separations
+  must remain named and independently usable in either layout.
 - Anything that must paint on top of the group (e.g. QR overlay) must be drawn
   after the form, or z-order breaks.
 - pdf-lib: an embedded image stays serialized at save even if you never call

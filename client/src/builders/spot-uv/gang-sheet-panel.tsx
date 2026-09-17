@@ -44,7 +44,9 @@ export default function GangSheetPanel({
   packResult: packResultProp,
 }: GangSheetPanelProps) {
   const [isExporting, setIsExporting] = useState(false);
+  const [isSingleArtboardExporting, setIsSingleArtboardExporting] = useState(false);
   const [downloadingItemId, setDownloadingItemId] = useState<string | null>(null);
+  const [downloadingSingleItemId, setDownloadingSingleItemId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveNameDialogOpen, setSaveNameDialogOpen] = useState(false);
   const [saveNameValue, setSaveNameValue] = useState("");
@@ -89,20 +91,14 @@ export default function GangSheetPanel({
       setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
       return;
     }
-    const spotNames = new Set(
-      items.flatMap(existing => [
-        existing.spotWhiteName,
-        existing.spotGlossName,
-        ...(existing.spotColors ?? []).flatMap(color => [color.spotWhiteName, color.spotGlossName]),
-      ])
-      .concat([
-        item.spotWhiteName,
-        item.spotGlossName,
-        ...(item.spotColors ?? []).flatMap(color => [color.spotWhiteName, color.spotGlossName]),
-      ])
-        .filter((value): value is string => !!value)
-        .map(value => value.toLowerCase())
-    );
+    const spotNames = new Set(items.flatMap(existing => {
+      const names: string[] = [];
+      const white = existing.spotColors?.find(color => color.spotWhite);
+      const gloss = existing.spotColors?.find(color => color.spotGloss);
+      if (white) names.push(white.spotWhiteName || existing.spotWhiteName || "RDG_WHITE");
+      if (gloss) names.push(gloss.spotGlossName || existing.spotGlossName || "RDG_GLOSS");
+      return names.map(value => value.toLowerCase());
+    }));
     if (spotNames.has(name.toLowerCase())) {
       toast({ title: "Spot name already in use", description: "CutContour must be different from White and Varnish (Gloss).", variant: "destructive" });
       setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
@@ -236,6 +232,21 @@ export default function GangSheetPanel({
     }
   }, [toast]);
 
+  const handleDownloadSingleArtboardItem = useCallback(async (item: GangSheetItem) => {
+    setDownloadingSingleItemId(item.id);
+    try {
+      await downloadGangSheetItemPDF(item, true);
+    } catch (err) {
+      toast({
+        title: "Couldn't download design",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingSingleItemId(null);
+    }
+  }, [toast]);
+
   const handleExport = useCallback(async () => {
     setIsExporting(true);
     try {
@@ -249,6 +260,22 @@ export default function GangSheetPanel({
       });
     } finally {
       setIsExporting(false);
+    }
+  }, [items, settings, packResult, toast]);
+
+  const handleSingleArtboardExport = useCallback(async () => {
+    setIsSingleArtboardExporting(true);
+    try {
+      await downloadGangSheetPDF(items, settings, packResult.placements, true);
+    } catch (err) {
+      console.error("[GangSheet] Single Artboard PDF export failed:", err);
+      toast({
+        title: "Couldn't export gang sheet",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSingleArtboardExporting(false);
     }
   }, [items, settings, packResult, toast]);
 
@@ -369,7 +396,7 @@ export default function GangSheetPanel({
             return (
               <div
                 key={item.id}
-                className={`flex items-center gap-2.5 p-2 rounded-lg border ${
+                className={`flex flex-wrap items-center gap-2.5 p-2 rounded-lg border ${
                   isTooBig
                     ? "bg-red-500/15 border-red-400/30"
                     : "bg-[#2d5a8a]/60 border-white/10"
@@ -383,7 +410,7 @@ export default function GangSheetPanel({
                 <button
                   type="button"
                   onClick={() => void handleDownloadItem(item)}
-                  disabled={downloadingItemId !== null || isExporting || isSaving}
+                    disabled={downloadingItemId !== null || downloadingSingleItemId !== null || isExporting || isSingleArtboardExporting || isSaving}
                   aria-label={`Download design ${index + 1} PDF`}
                   title="Download this design with its saved outline (one copy)"
                   className="shrink-0 w-7 h-8 flex items-center justify-center rounded bg-white/10 border border-white/15 text-cyan-200 hover:bg-white/20 disabled:opacity-40 disabled:cursor-wait focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
@@ -392,7 +419,16 @@ export default function GangSheetPanel({
                     ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                     : <Download className="w-4 h-4" aria-hidden="true" />}
                 </button>
-                <div className="flex-1 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => void handleDownloadSingleArtboardItem(item)}
+                    disabled={downloadingItemId !== null || downloadingSingleItemId !== null || isExporting || isSingleArtboardExporting || isSaving}
+                    aria-label={`Single Artboard Download design ${index + 1}`}
+                    className="order-last basis-full w-full h-8 px-2 flex items-center justify-center rounded bg-[#4dff80] hover:bg-[#2ee66a] text-[#05321a] text-xs font-semibold disabled:opacity-40 disabled:cursor-wait"
+                  >
+                    {downloadingSingleItemId === item.id ? "Downloading..." : "Single Artboard Download"}
+                  </button>
+                <div className="flex-1 min-w-[5rem]">
                   <div className="text-xs font-medium text-[#e8eef6] truncate">
                     {item.resizeSettings.widthInches.toFixed(1)}" × {item.resizeSettings.heightInches.toFixed(1)}"
                   </div>
@@ -475,15 +511,22 @@ export default function GangSheetPanel({
       <div className="p-3 border-t border-white/10">
         <Button
           onClick={handleExport}
-          disabled={isExporting || isSaving || downloadingItemId !== null || packResult.placements.length === 0}
-          className="w-full h-10 bg-[#4dff80] hover:bg-[#2ee66a] text-[#05321a] font-semibold"
+          disabled={isExporting || isSingleArtboardExporting || isSaving || downloadingItemId !== null || downloadingSingleItemId !== null || packResult.placements.length === 0}
+          className="w-full h-10 bg-[#0e7490] hover:bg-[#0891b2] text-white font-semibold"
         >
           {isExporting ? "Exporting..." : "Download Gang Sheet PDF"}
+        </Button>
+        <Button
+          onClick={handleSingleArtboardExport}
+          disabled={isExporting || isSingleArtboardExporting || isSaving || downloadingItemId !== null || downloadingSingleItemId !== null || packResult.placements.length === 0}
+          className="w-full mt-2 h-10 bg-[#4dff80] hover:bg-[#2ee66a] text-[#05321a] font-semibold"
+        >
+          {isSingleArtboardExporting ? "Exporting..." : "Single Artboard Download"}
         </Button>
         {isAuthenticated && (
           <Button
             onClick={handleSaveGangSheet}
-            disabled={isSaving || isExporting || downloadingItemId !== null || packResult.placements.length === 0}
+            disabled={isSaving || isExporting || isSingleArtboardExporting || downloadingItemId !== null || downloadingSingleItemId !== null || packResult.placements.length === 0}
             variant="outline"
             className="w-full mt-2 h-10 border-white/20 bg-white/10 text-white hover:bg-white/20"
           >

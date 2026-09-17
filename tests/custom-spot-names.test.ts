@@ -126,6 +126,7 @@ const legacyShapeModule = await viteServer.ssrLoadModule("/src/lib/shape-outline
 const contourModule = await viteServer.ssrLoadModule("/src/builders/spot-uv/lib/contour-outline.ts");
 const legacyContourModule = await viteServer.ssrLoadModule("/src/lib/contour-outline.ts");
 const gangModule = await viteServer.ssrLoadModule("/src/builders/spot-uv/lib/gang-sheet.ts");
+const legacyGangModule = await viteServer.ssrLoadModule("/src/lib/gang-sheet.ts");
 const vectorStrokeModule = await viteServer.ssrLoadModule("/src/lib/vector-stroke.ts");
 const pdfParserModule = await viteServer.ssrLoadModule("/src/builders/spot-uv/lib/pdf-parser.ts");
 const schemaModule = await import("../shared/design-document.ts");
@@ -338,33 +339,102 @@ test("gangsheet item-level White/Varnish names and custom cut label survive expo
   assert.match(pdf.getSubject() ?? "", /CutContourLabels:Gang%2320%20%2F%20%232f%20cut/);
 });
 
-test("gangsheet rejects a cut name colliding with another item's White/Varnish plate", async () => {
-  downloads.clear();
-  const tracesBefore = traceCalls;
-  const first = {
-    id: "first",
-    cutContourLabel: "Unique cut",
-    spotColors: [],
-  };
-  const second = {
-    id: "second",
-    cutContourLabel: "Other cut",
-    spotColors: [{
-      ...makeSpotColors()[0],
-      spotWhiteName: "Unique cut",
-      spotGlossName: undefined,
-    }],
-  };
-  await assert.rejects(
-    () => gangModule.downloadGangSheetPDF(
-      [first, second] as any,
-      { sheetWidth: 4, sheetHeight: 4 } as any,
-      [],
-    ),
-    /Gang sheet export rejected: CutContour name "Unique cut".*item "second"/,
-  );
-  assert.equal(traceCalls, tracesBefore, "collision must fail before spot tracing starts");
-  assert.equal(downloads.size, 0, "collision must fail before any download is created");
+test("gangsheet rejects cut names colliding with effective White/Varnish names before either export mode starts", async () => {
+  const collisionCases = [
+    {
+      name: "same-item default White",
+      items: [{
+        id: "same-white",
+        cutContourLabel: "rdg_white",
+        spotColors: [{ ...makeSpotColors()[0], spotGloss: false, spotWhiteName: undefined }],
+      }],
+      conflictingItem: "same-white",
+    },
+    {
+      name: "same-item default Gloss",
+      items: [{
+        id: "same-gloss",
+        cutContourLabel: "RDG_GLOSS",
+        spotColors: [{ ...makeSpotColors()[0], spotWhite: false, spotGlossName: undefined }],
+      }],
+      conflictingItem: "same-gloss",
+    },
+    {
+      name: "cross-item default",
+      items: [
+        { id: "default-cut", cutContourLabel: "RDG_WHITE", spotColors: [] },
+        {
+          id: "default-white",
+          cutContourLabel: "Other cut",
+          spotColors: [{ ...makeSpotColors()[0], spotGloss: false, spotWhiteName: undefined }],
+        },
+      ],
+      conflictingItem: "default-white",
+    },
+    {
+      name: "cross-item custom",
+      items: [
+        { id: "custom-cut", cutContourLabel: "Unique cut", spotColors: [] },
+        {
+          id: "custom-white",
+          cutContourLabel: "Other cut",
+          spotColors: [{
+            ...makeSpotColors()[0],
+            spotWhiteName: "Unique cut",
+            spotGlossName: undefined,
+          }],
+        },
+      ],
+      conflictingItem: "custom-white",
+    },
+  ];
+
+  for (const module of [gangModule, legacyGangModule]) {
+    for (const singleArtboard of [false, true]) {
+      for (const collision of collisionCases) {
+        downloads.clear();
+        const tracesBefore = traceCalls;
+        await assert.rejects(
+          () => module.downloadGangSheetPDF(
+            collision.items as any,
+            { sheetWidth: 4, sheetHeight: 4 } as any,
+            [],
+            singleArtboard,
+          ),
+          new RegExp(`Gang sheet export rejected:.*item "${collision.conflictingItem}"`),
+          `${collision.name} should be rejected`,
+        );
+        assert.equal(traceCalls, tracesBefore, `${collision.name} must fail before spot tracing starts`);
+        assert.equal(downloads.size, 0, `${collision.name} must fail before any download is created`);
+      }
+    }
+  }
+});
+
+test("gangsheet allows the same default separation names across noncolliding items", async () => {
+  const items = [
+    {
+      id: "first",
+      cutContourLabel: "Cut one",
+      spotColors: [{ ...makeSpotColors()[0], spotWhiteName: undefined, spotGlossName: undefined }],
+    },
+    {
+      id: "second",
+      cutContourLabel: "Cut two",
+      spotColors: [{ ...makeSpotColors()[0], spotWhiteName: undefined, spotGlossName: undefined }],
+    },
+  ];
+
+  for (const module of [gangModule, legacyGangModule]) {
+    for (const singleArtboard of [false, true]) {
+      await module.downloadGangSheetPDF(
+        items as any,
+        { sheetWidth: 4, sheetHeight: 4 } as any,
+        [],
+        singleArtboard,
+      );
+    }
+  }
 });
 
 test("SVG export records custom spot name with XML escaping", () => {

@@ -53,6 +53,7 @@ export default function GangSheetPanel({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const previewWrapperRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isSingleArtboardExporting, setIsSingleArtboardExporting] = useState(false);
   const [loadedImages, setLoadedImages] = useState<Map<string, HTMLImageElement>>(new Map());
   const [fitWarning, setFitWarning] = useState<{ id: string; maxFit: number } | null>(null);
   const { isAuthenticated } = useAuth();
@@ -104,20 +105,14 @@ export default function GangSheetPanel({
       setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
       return;
     }
-    const spotNames = new Set(
-      items.flatMap(existing => [
-        existing.spotWhiteName,
-        existing.spotGlossName,
-        ...(existing.spotColors ?? []).flatMap(color => [color.spotWhiteName, color.spotGlossName]),
-      ])
-      .concat([
-        item.spotWhiteName,
-        item.spotGlossName,
-        ...(item.spotColors ?? []).flatMap(color => [color.spotWhiteName, color.spotGlossName]),
-      ])
-        .filter((value): value is string => !!value)
-        .map(value => value.toLowerCase())
-    );
+    const spotNames = new Set(items.flatMap(existing => {
+      const names: string[] = [];
+      const white = existing.spotColors?.find(color => color.spotWhite);
+      const gloss = existing.spotColors?.find(color => color.spotGloss);
+      if (white) names.push(white.spotWhiteName || existing.spotWhiteName || "RDG_WHITE");
+      if (gloss) names.push(gloss.spotGlossName || existing.spotGlossName || "RDG_GLOSS");
+      return names.map(value => value.toLowerCase());
+    }));
     if (spotNames.has(name.toLowerCase())) {
       toast({ title: "Spot name already in use", description: "CutContour must be different from White and Varnish (Gloss).", variant: "destructive" });
       setCutNameDrafts(prev => ({ ...prev, [item.id]: item.cutContourLabel }));
@@ -249,6 +244,18 @@ export default function GangSheetPanel({
       console.error("[GangSheet] PDF export failed:", err);
     } finally {
       setIsExporting(false);
+    }
+  }, [items, settings, packResult]);
+
+  const handleSingleArtboardExport = useCallback(async () => {
+    setIsSingleArtboardExporting(true);
+    try {
+      await downloadGangSheetPDF(items, settings, packResult.placements, true);
+      recordDownload({ downloadType: "gang-sheet" });
+    } catch (err) {
+      console.error("[GangSheet] Single Artboard PDF export failed:", err);
+    } finally {
+      setIsSingleArtboardExporting(false);
     }
   }, [items, settings, packResult]);
 
@@ -1023,7 +1030,7 @@ export default function GangSheetPanel({
         <div className="p-4 border-t border-gray-100 bg-white">
           <Button
             onClick={handleExport}
-            disabled={isExporting || packResult.placements.length === 0}
+            disabled={isExporting || isSingleArtboardExporting || packResult.placements.length === 0}
             className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
           >
             {isExporting ? (
@@ -1041,11 +1048,18 @@ export default function GangSheetPanel({
               </>
             )}
           </Button>
+          <Button
+            onClick={handleSingleArtboardExport}
+            disabled={isExporting || isSingleArtboardExporting || packResult.placements.length === 0}
+            className="w-full mt-2 bg-[#4dff80] hover:bg-[#2ee66a] text-[#05321a]"
+          >
+            {isSingleArtboardExporting ? "Exporting..." : "Single Artboard Download"}
+          </Button>
           {isAuthenticated && (
             // Labeled to match the dialog's button — saving also downloads, so say so up front.
             <Button
               onClick={handleSaveGangSheet}
-              disabled={isSaving || packResult.placements.length === 0}
+              disabled={isSaving || isExporting || isSingleArtboardExporting || packResult.placements.length === 0}
               variant="outline"
               className="w-full mt-2 border-gray-200 text-gray-700"
             >
