@@ -20,13 +20,14 @@ function drawRoundedRectOnCanvas(
 ) {
   ctx.moveTo(x + r, y);
   ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  const k = 0.5522847498, rk = r * k;
+  ctx.bezierCurveTo(x + w - r + rk, y, x + w, y + r - rk, x + w, y + r);
   ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.bezierCurveTo(x + w, y + h - r + rk, x + w - r + rk, y + h, x + w - r, y + h);
   ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.bezierCurveTo(x + r - rk, y + h, x, y + h - r + rk, x, y + h - r);
   ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.bezierCurveTo(x, y + r - rk, x + r - rk, y, x + r, y);
   ctx.closePath();
 }
 
@@ -36,29 +37,7 @@ function buildShapeClipPath(
   clipW: number, clipH: number,
   cornerRadius: number
 ) {
-  ctx.beginPath();
-  if (type === 'circle') {
-    const r = Math.min(clipW, clipH) / 2;
-    ctx.arc(clipW / 2, clipH / 2, r, 0, Math.PI * 2);
-  } else if (type === 'oval') {
-    ctx.ellipse(clipW / 2, clipH / 2, clipW / 2, clipH / 2, 0, 0, Math.PI * 2);
-  } else if (type === 'rounded-square') {
-    const size = Math.min(clipW, clipH);
-    const sx = (clipW - size) / 2;
-    const sy = (clipH - size) / 2;
-    const r = Math.min(cornerRadius, size / 2);
-    drawRoundedRectOnCanvas(ctx, sx, sy, size, size, r);
-  } else if (type === 'rounded-rectangle') {
-    const r = Math.min(cornerRadius, clipW / 2, clipH / 2);
-    drawRoundedRectOnCanvas(ctx, 0, 0, clipW, clipH, r);
-  } else if (type === 'square') {
-    const size = Math.min(clipW, clipH);
-    const sx = (clipW - size) / 2;
-    const sy = (clipH - size) / 2;
-    ctx.rect(sx, sy, size, size);
-  } else {
-    ctx.rect(0, 0, clipW, clipH);
-  }
+  traceShapeCanvasPath(ctx, type, 0, 0, clipW, clipH, cornerRadius);
 }
 
 function generateShapePDFPath(
@@ -112,7 +91,8 @@ function generateShapePDFPath(
 
 function pdfRotationTransform(cx: number, cy: number, deg: number): string {
   if (deg === 0) return '';
-  const rad = deg * Math.PI / 180;
+  // Canvas preview/clip uses Y-down coordinates. Negate for PDF's Y-up axes.
+  const rad = -deg * Math.PI / 180;
   const c = Math.cos(rad);
   const s = Math.sin(rad);
   return `1 0 0 1 ${cx} ${cy} cm\n${c} ${s} ${-s} ${c} 0 0 cm\n1 0 0 1 ${-cx} ${-cy} cm\n`;
@@ -234,6 +214,31 @@ export function calculateShapeDimensions(
   }
 }
 
+/** Finished cut size (excluding the fixed 0.10" PDF bleed on each side). */
+export function resolveShapeDimensions(shape: ShapeSettings, design: ResizeSettings) {
+  const auto = calculateShapeDimensions(design.widthInches, design.heightInches, shape.type, shape.offset);
+  return {
+    widthInches: shape.shapeWidthOverride && shape.shapeWidthOverride > 0 ? shape.shapeWidthOverride : auto.widthInches,
+    heightInches: shape.shapeHeightOverride && shape.shapeHeightOverride > 0 ? shape.shapeHeightOverride : auto.heightInches,
+  };
+}
+
+/** A path in canvas coordinates, shared by preview, package raster and PDF clipping. */
+export function traceShapeCanvasPath(ctx: CanvasRenderingContext2D, type: ShapeSettings['type'],
+  x: number, y: number, width: number, height: number, radius: number) {
+  ctx.beginPath();
+  if (type === 'circle') ctx.arc(x + width / 2, y + height / 2, Math.min(width, height) / 2, 0, Math.PI * 2);
+  else if (type === 'oval') ctx.ellipse(x + width / 2, y + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
+  else if (type === 'square' || type === 'rounded-square') {
+    const size = Math.min(width, height);
+    const sx = x + (width - size) / 2, sy = y + (height - size) / 2;
+    if (type === 'square') ctx.rect(sx, sy, size, size);
+    else drawRoundedRectOnCanvas(ctx, sx, sy, size, size, Math.min(radius, size / 2));
+  } else if (type === 'rounded-rectangle') {
+    drawRoundedRectOnCanvas(ctx, x, y, width, height, Math.min(radius, width / 2, height / 2));
+  } else ctx.rect(x, y, width, height);
+}
+
 export function generateShapePathPointsInches(
   shapeSettings: ShapeSettings,
   resizeSettings: ResizeSettings,
@@ -245,19 +250,7 @@ export function generateShapePathPointsInches(
   imageOffsetY: number;
   bleedInches: number;
 } {
-  let shapeDims = calculateShapeDimensions(
-    resizeSettings.widthInches,
-    resizeSettings.heightInches,
-    shapeSettings.type,
-    shapeSettings.offset
-  );
-
-  if (shapeSettings.shapeWidthOverride && shapeSettings.shapeWidthOverride > 0) {
-    shapeDims = { widthInches: shapeSettings.shapeWidthOverride, heightInches: shapeDims.heightInches };
-  }
-  if (shapeSettings.shapeHeightOverride && shapeSettings.shapeHeightOverride > 0) {
-    shapeDims = { widthInches: shapeDims.widthInches, heightInches: shapeSettings.shapeHeightOverride };
-  }
+  const shapeDims = resolveShapeDimensions(shapeSettings, resizeSettings);
 
   const bleedInches = 0.10;
   const totalWidthInches = shapeDims.widthInches + bleedInches * 2;
@@ -352,20 +345,10 @@ export async function downloadShapePDF(
   singleArtboard: boolean = true,
   cutContourLabel: string = 'CutContour',
   lockedContour?: { label: string; pathPoints: Array<{x: number; y: number}>; allPathPoints?: Array<Array<{x: number; y: number}>>; widthInches: number; heightInches: number; imageOffsetX: number; imageOffsetY: number } | null,
-  spotPixelMap?: SpotPixelMapData
-): Promise<void> {
-  let shapeDims = calculateShapeDimensions(
-    resizeSettings.widthInches,
-    resizeSettings.heightInches,
-    shapeSettings.type,
-    shapeSettings.offset
-  );
-  if (shapeSettings.shapeWidthOverride && shapeSettings.shapeWidthOverride > 0) {
-    shapeDims = { widthInches: shapeSettings.shapeWidthOverride, heightInches: shapeDims.heightInches };
-  }
-  if (shapeSettings.shapeHeightOverride && shapeSettings.shapeHeightOverride > 0) {
-    shapeDims = { widthInches: shapeDims.widthInches, heightInches: shapeSettings.shapeHeightOverride };
-  }
+  spotPixelMap?: SpotPixelMapData,
+  returnBase64: boolean = false
+): Promise<void | string> {
+  const shapeDims = resolveShapeDimensions(shapeSettings, resizeSettings);
   const { widthInches, heightInches } = shapeDims;
 
   const bleedInches = 0.10;
@@ -564,6 +547,11 @@ export async function downloadShapePDF(
   pdfDoc.setKeywords([cutContourLabel, 'spot color', 'cutting', 'vector', 'shape']);
   
   const pdfBytes = await pdfDoc.save();
+  if (returnBase64) {
+    let binary = '';
+    for (let i = 0; i < pdfBytes.length; i++) binary += String.fromCharCode(pdfBytes[i]);
+    return btoa(binary);
+  }
   const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
   const url = URL.createObjectURL(pdfBlob);
   
@@ -582,64 +570,6 @@ export async function generateShapePDFBase64(
   resizeSettings: ResizeSettings,
   cutContourLabel: string = 'CutContour'
 ): Promise<string | null> {
-  let shapeDims = calculateShapeDimensions(
-    resizeSettings.widthInches, resizeSettings.heightInches, shapeSettings.type, shapeSettings.offset
-  );
-  if (shapeSettings.shapeWidthOverride && shapeSettings.shapeWidthOverride > 0) {
-    shapeDims = { widthInches: shapeSettings.shapeWidthOverride, heightInches: shapeDims.heightInches };
-  }
-  if (shapeSettings.shapeHeightOverride && shapeSettings.shapeHeightOverride > 0) {
-    shapeDims = { widthInches: shapeDims.widthInches, heightInches: shapeSettings.shapeHeightOverride };
-  }
-  const { widthInches, heightInches } = shapeDims;
-  const widthPts = widthInches * 72;
-  const heightPts = heightInches * 72;
-  const rotation = shapeSettings.rotation || 0;
-  const cornerRadiusPts = (shapeSettings.cornerRadius || 0.25) * 72;
-
-  const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([widthPts, heightPts]);
-  const context = pdfDoc.context;
-  const cx = widthPts / 2;
-  const cy = heightPts / 2;
-
-  const appendContent = (ops: string) => {
-    const stream = context.stream(ops);
-    const ref = context.register(stream);
-    const existing = page.node.Contents();
-    if (existing instanceof PDFArray) { existing.push(ref); }
-    else if (existing) { page.node.set(PDFName.of('Contents'), context.obj([existing, ref])); }
-    else { page.node.set(PDFName.of('Contents'), ref); }
-  };
-
-  const clippedImage = await createClippedShapeImage(image, shapeSettings, resizeSettings, widthInches, heightInches, pdfDoc);
-  page.drawImage(clippedImage, { x: 0, y: 0, width: widthPts, height: heightPts });
-
-  let resources = page.node.Resources();
-  const tintFunction = context.obj({ FunctionType: 2, Domain: [0, 1], C0: [0, 0, 0, 0], C1: [0, 1, 0, 0], N: 1 });
-  const tintFunctionRef = context.register(tintFunction);
-  const separationColorSpace = context.obj([
-    PDFName.of('Separation'), pdfName(cutContourLabel), PDFName.of('DeviceCMYK'), tintFunctionRef
-  ]);
-  const separationRef = context.register(separationColorSpace);
-  if (resources) {
-    let colorSpaceDict = resources.get(PDFName.of('ColorSpace'));
-    if (!colorSpaceDict) { colorSpaceDict = context.obj({}); resources.set(PDFName.of('ColorSpace'), colorSpaceDict); }
-    (colorSpaceDict as PDFDict).set(pdfName(cutContourLabel), separationRef);
-  }
-
-  let pathOps = 'q\n';
-  pathOps += pdfRotationTransform(cx, cy, rotation);
-  pathOps += `${pdfNameToken(cutContourLabel)} CS 1 SCN\n0.5 w\n`;
-  pathOps += generateShapePDFPath(shapeSettings.type, cx, cy, widthPts, heightPts, widthPts, heightPts, cornerRadiusPts);
-  pathOps += 'h S\nQ\n';
-  appendContent(pathOps);
-
-  pdfDoc.setTitle('Shape with CutContour');
-  pdfDoc.setSubject(`Contains ${cutContourLabel} spot color for cutting machines ${cutContourMetadata([cutContourLabel])}`);
-
-  const pdfBytes = await pdfDoc.save();
-  let binary = '';
-  for (let i = 0; i < pdfBytes.length; i++) binary += String.fromCharCode(pdfBytes[i]);
-  return btoa(binary);
+  return (await downloadShapePDF(image, shapeSettings, resizeSettings, 'shape.pdf',
+    undefined, true, cutContourLabel, null, undefined, true)) as string;
 }

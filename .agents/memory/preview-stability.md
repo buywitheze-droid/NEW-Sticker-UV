@@ -13,4 +13,10 @@ Do not infer an enhancement from unchanged `File` identity, or finish its busy s
 
 **Why:** Print-resolution edits create a replacement file as well as a replacement image. A same-file guard silently fails on these edits; tests that start observing after processing finishes miss the intermediate plain-image/contour transitions.
 
-**How to apply:** Track enhancement explicitly through the final rendered preview, including debounced contour adjustments. Test the entire busy-to-ready transition and worker requests, not only the settled image. Keep lightweight display work separate from export-quality caches.
+**How to apply:** Track enhancement explicitly through the final rendered preview, including debounced contour adjustments. Test the entire busy-to-ready transition and worker requests, not only the settled image. Lightweight interim display work must not become the final proof: use the authoritative export geometry for the settled cutline.
+
+The settled cutline must remain visible above artwork.
+
+**Why:** Artwork touching a shape edge can hide a correctly positioned contour, producing an apparent preview/download mismatch even when coordinates match.
+
+**How to apply:** Compare rendered boundaries as well as numeric bounds; keep proof overlays above clipped artwork.

@@ -69,49 +69,17 @@ self.onmessage = function(e: MessageEvent<WorkerMessage>) {
           y: p.y / scale
         }));
 
-        const rescaledImgX = result.imageCanvasX / scale;
-        const rescaledImgY = result.imageCanvasY / scale;
-
-        const smoothPts = rescaledPreviewPts.map(p => ({
-          x: p.x - rescaledImgX,
-          y: p.y - rescaledImgY
-        }));
-
-        const bleedInches = 0.10;
-        const spXs = smoothPts.map(p => p.x);
-        const spYs = smoothPts.map(p => p.y);
-        const spMinX = Math.min(...spXs);
-        const spMinY = Math.min(...spYs);
-        const spMaxX = Math.max(...spXs);
-        const spMaxY = Math.max(...spYs);
-        const pathWPx = spMaxX - spMinX;
-        const pathHPx = spMaxY - spMinY;
-        const pathWIn = pathWPx / effectiveDPI;
-        const pathHIn = pathHPx / effectiveDPI;
-        const pageW = pathWIn + (bleedInches * 2);
-        const pageH = pathHIn + (bleedInches * 2);
-
-        const recomputedPathPoints = smoothPts.map(p => ({
-          x: ((p.x - spMinX) / effectiveDPI) + bleedInches,
-          y: pageH - (((p.y - spMinY) / effectiveDPI) + bleedInches)
-        }));
-        const recomputedImgOffX = ((0 - spMinX) / effectiveDPI) + bleedInches;
-        const recomputedImgOffY = ((0 - spMinY) / effectiveDPI) + bleedInches;
+        // Physical PDF coordinates are already computed by the trace core.
+        // Scaling the pixels back must not derive a new bounding box from the
+        // first path (which can exclude other paths or holes), nor assume a
+        // different bleed. Preserve the core's page and PDF coordinates.
 
         // Rescale allPreviewPathPoints and recompute allPathPoints if present (zero hero mode)
         let rescaledAllPreview: Array<Array<{x: number; y: number}>> | undefined;
-        let recomputedAllPath: Array<Array<{x: number; y: number}>> | undefined;
         if (result.contourData.allPreviewPathPoints && result.contourData.allPreviewPathPoints.length > 0) {
           rescaledAllPreview = result.contourData.allPreviewPathPoints.map(pts =>
             pts.map(p => ({ x: p.x / scale, y: p.y / scale }))
           );
-          recomputedAllPath = rescaledAllPreview.map(pts => {
-            const sm = pts.map(p => ({ x: p.x - rescaledImgX, y: p.y - rescaledImgY }));
-            return sm.map(p => ({
-              x: ((p.x - spMinX) / effectiveDPI) + bleedInches,
-              y: pageH - (((p.y - spMinY) / effectiveDPI) + bleedInches)
-            }));
-          });
         }
 
         // Same dance for the bezier representation: each path's anchors and
@@ -119,48 +87,20 @@ self.onmessage = function(e: MessageEvent<WorkerMessage>) {
         // polylines, so we apply the identical rescale + image-origin shift +
         // pixel→inch + Y-flip transform.
         let rescaledAllBezierPreview: BezierPath[] | undefined;
-        let recomputedAllBezier: BezierPath[] | undefined;
         if (result.contourData.allBezierPathsPreview && result.contourData.allBezierPathsPreview.length > 0) {
           rescaledAllBezierPreview = result.contourData.allBezierPathsPreview.map(bp =>
             bezierPathScale(bp, 1 / scale)
           );
-          // Shift to image-origin frame (subtract rescaledImg{X,Y}) before
-          // running the standard pixel→inch conversion. We do this in one
-          // fused transform to avoid duplicate work.
-          recomputedAllBezier = rescaledAllBezierPreview.map(bp => {
-            const cvt = (p: { x: number; y: number }) => ({
-              x: (((p.x - rescaledImgX) - spMinX) / effectiveDPI) + bleedInches,
-              y: pageH - ((((p.y - rescaledImgY) - spMinY) / effectiveDPI) + bleedInches),
-            });
-            return {
-              start: cvt(bp.start),
-              segments: bp.segments.map(seg =>
-                seg.type === 'line'
-                  ? { type: 'line', to: cvt(seg.to) }
-                  : { type: 'cubic', cp1: cvt(seg.cp1), cp2: cvt(seg.cp2), to: cvt(seg.to) }
-              ),
-              closed: true as const,
-            };
-          });
         }
 
         contourData = {
-          pathPoints: recomputedPathPoints,
+          ...result.contourData,
           previewPathPoints: rescaledPreviewPts,
-          allPathPoints: recomputedAllPath,
           allPreviewPathPoints: rescaledAllPreview,
-          allBezierPaths: recomputedAllBezier,
           allBezierPathsPreview: rescaledAllBezierPreview,
-          widthInches: pageW,
-          heightInches: pageH,
-          imageOffsetX: recomputedImgOffX,
-          imageOffsetY: recomputedImgOffY,
-          backgroundColor: result.contourData.backgroundColor,
-          useEdgeBleed: result.contourData.useEdgeBleed,
           effectiveDPI,
-          minPathX: spMinX,
-          minPathY: spMinY,
-          bleedInches,
+          minPathX: result.contourData.minPathX / scale,
+          minPathY: result.contourData.minPathY / scale,
         };
         imageCanvasX = Math.round(result.imageCanvasX / scale);
         imageCanvasY = Math.round(result.imageCanvasY / scale);

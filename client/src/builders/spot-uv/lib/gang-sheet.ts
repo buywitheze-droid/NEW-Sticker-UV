@@ -137,7 +137,8 @@ export function getGangSheetImageSizeInches(item: GangSheetItem): GangSheetImage
     || (item.contourData.minPathX === 0 && item.contourData.minPathY === 0
       && item.contourData.effectiveDPI === 300);
   if (isShapeMode) {
-    return { w: item.resizeSettings.widthInches, h: item.resizeSettings.heightInches, isShapeMode };
+    const scale = item.shapeSettings?.imageScale || 1;
+    return { w: item.resizeSettings.widthInches * scale, h: item.resizeSettings.heightInches * scale, isShapeMode };
   }
   const safeNatH = imgNatH || 1;
   const safeResH = item.resizeSettings.heightInches || 1;
@@ -169,7 +170,9 @@ export function getGangSheetImageRectInches(
   const ox = item.contourData.imageOffsetX || 0;
   const oy = item.contourData.imageOffsetY || 0;
   if (placement.rotated) {
-    return { x: placement.x + oy, y: placement.y + ox, w: size.h, h: size.w };
+    return { x: placement.x + oy,
+      y: placement.y + (item.shapeSettings?.enabled ? item.contourData.widthInches - ox - size.w : ox),
+      w: size.h, h: size.w };
   }
   return { x: placement.x + ox, y: placement.y + oy, w: size.w, h: size.h };
 }

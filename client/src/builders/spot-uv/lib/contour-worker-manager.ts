@@ -377,7 +377,15 @@ class ContourWorkerManager {
     detectedShapeInfo?: DetectedShapeInfo | null
   ): Promise<{ canvas: HTMLCanvasElement; downsampleScale: number; imageCanvasX: number; imageCanvasY: number; contourData?: ContourData; detectedAlgorithm?: DetectedAlgorithm }> {
     const generation = this.generation;
-    const processKey = `${image.src}|${image.width}x${image.height}|${strokeSettings.width}|${strokeSettings.enabled}|${strokeSettings.alphaThreshold}|${strokeSettings.backgroundColor}|${strokeSettings.autoBridging}|${strokeSettings.autoBridgingThreshold}|${strokeSettings.contourMode}|${strokeSettings.cornerMode}|${resizeSettings.widthInches}|${resizeSettings.heightInches}|${detectedShapeType}|${(strokeSettings as any).includeHoles}`;
+    const processKey = JSON.stringify([
+      image.src, image.width, image.height, strokeSettings.width, strokeSettings.color,
+      strokeSettings.enabled, strokeSettings.alphaThreshold, strokeSettings.backgroundColor,
+      strokeSettings.useCustomBackground, strokeSettings.autoBridging,
+      strokeSettings.autoBridgingThreshold, strokeSettings.contourMode, strokeSettings.cornerMode,
+      (strokeSettings as any).includeHoles, resizeSettings.widthInches,
+      resizeSettings.heightInches, resizeSettings.maintainAspectRatio, resizeSettings.outputDPI,
+      detectedShapeType, detectedShapeInfo?.boundingBox,
+    ]);
     if (this.lastProcessKey === processKey && this.lastProcessResult) {
       return this.lastProcessResult;
     }
@@ -397,16 +405,14 @@ class ContourWorkerManager {
         resizeSettings,
         onProgress,
         this.displayOnly ? MAX_PREVIEW_DIMENSION : MAX_FALLBACK_DIMENSION,
+        detectedShapeType,
+        detectedShapeInfo,
       );
       if (generation !== this.generation) {
         throw new Error('Contour processing cancelled');
       }
-      const fallbackResult = {
-        canvas: fallback.canvas,
-        downsampleScale: fallback.scale,
-        imageCanvasX: 0,
-        imageCanvasY: 0,
-      };
+      const fallbackResult = fallback;
+      this.cachedContourData = fallback.contourData;
       this.lastProcessKey = processKey;
       this.lastProcessResult = fallbackResult;
       return fallbackResult;
@@ -440,7 +446,9 @@ class ContourWorkerManager {
       strokeSettings,
       effectiveDPI: effectiveDPI,
       resizeSettings: { ...resizeSettings, outputDPI: effectiveDPI },
-      previewMode: true,
+      // Only the independent fast display preview uses the reduced mode.
+      // The authoritative contour used for export has full PDF bleed.
+      previewMode: this.displayOnly,
       detectedShapeType,
       detectedShapeInfo: scaledShapeInfo,
       generation,
@@ -581,36 +589,12 @@ class ContourWorkerManager {
     resizeSettings: ResizeSettings,
     onProgress?: ProgressCallback,
     maxDimension = MAX_FALLBACK_DIMENSION,
-  ): Promise<{ canvas: HTMLCanvasElement; scale: number }> {
-    let processImage = image;
-    const maxDim = Math.max(image.width, image.height);
-    let scale = 1;
-
-    // Main-thread fallback ⇒ much tighter cap than the worker path. The
-    // silhouette pipeline is O(W*H) and synchronous; without this, a
-    // 3000–4000 px design freezes the UI for minutes.
-    if (maxDim > maxDimension) {
-      scale = maxDimension / maxDim;
-      const newWidth = Math.round(image.width * scale);
-      const newHeight = Math.round(image.height * scale);
-
-      console.log(`[ContourFallback] Downsampling from ${image.width}x${image.height} to ${newWidth}x${newHeight} (scale=${scale.toFixed(3)})`);
-
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = newWidth;
-      tempCanvas.height = newHeight;
-      const tempCtx = tempCanvas.getContext('2d')!;
-      tempCtx.imageSmoothingEnabled = true;
-      tempCtx.imageSmoothingQuality = 'high';
-      tempCtx.drawImage(image, 0, 0, newWidth, newHeight);
-
-      processImage = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error('Failed to decode downsampled fallback image'));
-        img.src = tempCanvas.toDataURL('image/png');
-      });
-    }
+    detectedShapeType?: DetectedShapeType,
+    detectedShapeInfo?: DetectedShapeInfo | null,
+  ): Promise<{ canvas: HTMLCanvasElement; downsampleScale: number; imageCanvasX: number; imageCanvasY: number; contourData: ContourData; detectedAlgorithm: DetectedAlgorithm }> {
+    const { canvas, scale } = downsampleImage(image, maxDimension);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Could not get fallback canvas context');
 
     onProgress?.(0.05);
     // Yield once so React can paint the "Processing... 0%" state and any
@@ -618,14 +602,24 @@ class ContourWorkerManager {
     // synchronous trace.
     await new Promise<void>((r) => setTimeout(r, 0));
 
-    const { createSilhouetteContour } = await import('./contour-outline');
-    const fullStrokeSettings = { ...strokeSettings, cornerMode: 'rounded' as const };
+    const { processContour } = await import('./contour-trace-core');
     onProgress?.(0.15);
-    const t0 = performance.now();
-    const result = createSilhouetteContour(processImage, fullStrokeSettings, resizeSettings);
-    console.log(`[ContourFallback] createSilhouetteContour finished in ${(performance.now() - t0).toFixed(0)} ms (input ${processImage.width}x${processImage.height})`);
+    const dpi = Math.min(canvas.width / resizeSettings.widthInches, canvas.height / resizeSettings.heightInches);
+    const bbox = detectedShapeInfo?.boundingBox;
+    const scaledBBox = bbox ? {
+      x: Math.round(bbox.x * scale), y: Math.round(bbox.y * scale),
+      width: Math.round(bbox.width * scale), height: Math.round(bbox.height * scale),
+    } : null;
+    const result = processContour(ctx.getImageData(0, 0, canvas.width, canvas.height), strokeSettings, dpi, this.displayOnly, detectedShapeType, scaledBBox);
+    const output = document.createElement('canvas');
+    output.width = result.imageData.width;
+    output.height = result.imageData.height;
+    const outputCtx = output.getContext('2d');
+    if (!outputCtx) throw new Error('Could not get fallback result canvas context');
+    outputCtx.putImageData(result.imageData, 0, 0);
     onProgress?.(1);
-    return { canvas: result, scale };
+    return { canvas: output, downsampleScale: scale, imageCanvasX: result.imageCanvasX,
+      imageCanvasY: result.imageCanvasY, contourData: result.contourData, detectedAlgorithm: result.detectedAlgorithm };
   }
 
   terminate() {

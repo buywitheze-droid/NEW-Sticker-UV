@@ -680,8 +680,9 @@ export async function downloadGangSheetPDF(
          && item.contourData.effectiveDPI === 300);
     let imgWidthPts: number, imgHeightPts: number;
     if (isShapeMode) {
-      imgWidthPts = item.resizeSettings.widthInches * 72;
-      imgHeightPts = item.resizeSettings.heightInches * 72;
+      const scale = item.shapeSettings?.imageScale || 1;
+      imgWidthPts = item.resizeSettings.widthInches * scale * 72;
+      imgHeightPts = item.resizeSettings.heightInches * scale * 72;
     } else {
       const safeNatH = imgNatH || 1;
       const safeResH = item.resizeSettings.heightInches || 1;
@@ -747,7 +748,10 @@ export async function downloadGangSheetPDF(
     }
 
     const imgXPts = (placement.x + (isRotated ? item.contourData.imageOffsetY : item.contourData.imageOffsetX)) * 72;
-    const imgYPts = heightPts - (placement.y + (isRotated ? item.contourData.imageOffsetX : item.contourData.imageOffsetY)) * 72 - drawImgHeightPts;
+    const imageTop = isRotated && item.shapeSettings?.enabled
+      ? placement.y + item.contourData.widthInches - item.contourData.imageOffsetX - imgWidthPts / 72
+      : placement.y + (isRotated ? item.contourData.imageOffsetX : item.contourData.imageOffsetY);
+    const imgYPts = heightPts - imageTop * 72 - drawImgHeightPts;
 
     // Clip image to contour path for shapes (circle, oval, rounded shapes)
     const needsClip = isShapeMode && item.shapeSettings

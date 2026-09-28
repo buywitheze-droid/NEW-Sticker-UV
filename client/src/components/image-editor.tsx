@@ -9,7 +9,7 @@ import { createVectorStroke, downloadVectorStroke, createVectorPaths, type Vecto
 import { checkCadCutBounds, type CadCutBounds } from "@/lib/cadcut-bounds";
 import { downloadContourPDF, downloadDesignOnlyPDF, type CachedContourData, type SpotColorInput } from "@/lib/contour-outline";
 import { getContourWorkerManager, processContourInWorker, type DetectedAlgorithm, type DetectedShapeInfo } from "@/lib/contour-worker-manager";
-import { downloadShapePDF, calculateShapeDimensions, generateShapePathPointsInches } from "@/lib/shape-outline";
+import { downloadShapePDF, calculateShapeDimensions, resolveShapeDimensions, traceShapeCanvasPath, generateShapePathPointsInches } from "@/lib/shape-outline";
 import { useDebouncedValue } from "@/hooks/use-debounce";
 import { removeBackgroundFromImage } from "@/lib/background-removal";
 import { magicWandErase } from "@/lib/magic-wand";
@@ -1781,14 +1781,15 @@ export default function ImageEditor({ onDesignUploaded }: { onDesignUploaded?: (
         if (!ctx) return;
 
         // Calculate output dimensions using auto-sizing
-        const shapeDims = calculateShapeDimensions(
+        const shapeDims = shapeSettings.enabled ? resolveShapeDimensions(shapeSettings, resizeSettings) : calculateShapeDimensions(
           resizeSettings.widthInches,
           resizeSettings.heightInches,
           shapeSettings.type,
           shapeSettings.offset
         );
-        const outputWidth = shapeDims.widthInches * 300;
-        const outputHeight = shapeDims.heightInches * 300;
+        const shapeBleedPx = shapeSettings.enabled ? 30 : 0;
+        const outputWidth = shapeDims.widthInches * 300 + shapeBleedPx * 2;
+        const outputHeight = shapeDims.heightInches * 300 + shapeBleedPx * 2;
         
         canvas.width = outputWidth;
         canvas.height = outputHeight;
@@ -1796,23 +1797,39 @@ export default function ImageEditor({ onDesignUploaded }: { onDesignUploaded?: (
         // Draw shape background
         // Holographic fill downloads as transparent (preview only) - skip fill entirely
         const isHolographicFill = shapeSettings.fillColor === 'holographic';
-        ctx.beginPath();
-        
-        if (shapeSettings.type === 'circle') {
+        if (shapeSettings.enabled) {
+          ctx.save();
+          ctx.translate(outputWidth / 2, outputHeight / 2);
+          ctx.rotate((shapeSettings.rotation || 0) * Math.PI / 180);
+          ctx.translate(-outputWidth / 2, -outputHeight / 2);
+          if (shapeSettings.bleedEnabled && !isHolographicFill) {
+            ctx.fillStyle = shapeSettings.bleedColor || '#FFFFFF';
+            traceShapeCanvasPath(ctx, shapeSettings.type, 0, 0, outputWidth, outputHeight,
+              (shapeSettings.cornerRadius || 0.25) * 300);
+            ctx.fill();
+          }
+          traceShapeCanvasPath(ctx, shapeSettings.type, shapeBleedPx, shapeBleedPx,
+            outputWidth - shapeBleedPx * 2, outputHeight - shapeBleedPx * 2,
+            (shapeSettings.cornerRadius || 0.25) * 300);
+        } else if (shapeSettings.type === 'circle') {
+          ctx.beginPath();
           const radius = Math.min(outputWidth, outputHeight) / 2;
           const centerX = outputWidth / 2;
           const centerY = outputHeight / 2;
           ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
         } else if (shapeSettings.type === 'oval') {
+          ctx.beginPath();
           const centerX = outputWidth / 2;
           const centerY = outputHeight / 2;
           ctx.ellipse(centerX, centerY, outputWidth / 2, outputHeight / 2, 0, 0, Math.PI * 2);
         } else if (shapeSettings.type === 'square') {
+          ctx.beginPath();
           const size = Math.min(outputWidth, outputHeight);
           const startX = (outputWidth - size) / 2;
           const startY = (outputHeight - size) / 2;
           ctx.rect(startX, startY, size, size);
         } else {
+          ctx.beginPath();
           ctx.rect(0, 0, outputWidth, outputHeight);
         }
         
@@ -1825,7 +1842,7 @@ export default function ImageEditor({ onDesignUploaded }: { onDesignUploaded?: (
         // Draw cutlines in magenta
         ctx.strokeStyle = '#FF00FF';
         ctx.lineWidth = 2;
-        ctx.stroke();
+        if (!shapeSettings.enabled) ctx.stroke();
 
         // Crop image to remove empty space before processing
         const croppedCanvas = cropImageToContent(imageInfo.image);
@@ -1842,25 +1859,48 @@ export default function ImageEditor({ onDesignUploaded }: { onDesignUploaded?: (
           });
         }
 
-        const imageWidth = resizeSettings.widthInches * 300;
-        const imageHeight = resizeSettings.heightInches * 300;
+        const imageWidth = resizeSettings.widthInches * 300 * (shapeSettings.enabled ? shapeSettings.imageScale || 1 : 1);
+        const imageHeight = resizeSettings.heightInches * 300 * (shapeSettings.enabled ? shapeSettings.imageScale || 1 : 1);
         
-        const imageX = (outputWidth - imageWidth) / 2;
-        const imageY = (outputHeight - imageHeight) / 2;
+        const imageX = (outputWidth - imageWidth) / 2 + (shapeSettings.enabled ? shapeSettings.imageOffsetX || 0 : 0) * 300;
+        const imageY = (outputHeight - imageHeight) / 2 + (shapeSettings.enabled ? shapeSettings.imageOffsetY || 0 : 0) * 300;
         
         ctx.save();
-        ctx.beginPath();
-        if (shapeSettings.type === 'circle') {
+        if (shapeSettings.enabled) {
+          traceShapeCanvasPath(ctx, shapeSettings.type, shapeBleedPx, shapeBleedPx,
+            outputWidth - shapeBleedPx * 2, outputHeight - shapeBleedPx * 2,
+            (shapeSettings.cornerRadius || 0.25) * 300);
+        } else if (shapeSettings.type === 'circle') {
+          ctx.beginPath();
           const clipRadius = Math.min(outputWidth, outputHeight) / 2;
           ctx.arc(outputWidth / 2, outputHeight / 2, clipRadius, 0, Math.PI * 2);
         } else if (shapeSettings.type === 'oval') {
+          ctx.beginPath();
           ctx.ellipse(outputWidth / 2, outputHeight / 2, outputWidth / 2, outputHeight / 2, 0, 0, Math.PI * 2);
         } else {
+          ctx.beginPath();
           ctx.rect(0, 0, outputWidth, outputHeight);
         }
         ctx.clip();
         ctx.drawImage(finalImage, imageX, imageY, imageWidth, imageHeight);
         ctx.restore();
+        if (shapeSettings.enabled) {
+          if (shapeSettings.strokeEnabled) {
+            traceShapeCanvasPath(ctx, shapeSettings.type, shapeBleedPx, shapeBleedPx,
+              outputWidth - shapeBleedPx * 2, outputHeight - shapeBleedPx * 2,
+              (shapeSettings.cornerRadius || 0.25) * 300);
+            ctx.strokeStyle = shapeSettings.strokeColor || '#000000';
+            ctx.lineWidth = (shapeSettings.strokeWidth || 1) * 300 / 72;
+            ctx.stroke();
+          }
+          traceShapeCanvasPath(ctx, shapeSettings.type, shapeBleedPx, shapeBleedPx,
+            outputWidth - shapeBleedPx * 2, outputHeight - shapeBleedPx * 2,
+            (shapeSettings.cornerRadius || 0.25) * 300);
+          ctx.strokeStyle = '#FF00FF';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+        if (shapeSettings.enabled) ctx.restore();
 
         // Awaited so recordDownload below can't fire before the file exists.
         const nameWithoutExt = imageInfo.file.name.replace(/\.[^/.]+$/, '');

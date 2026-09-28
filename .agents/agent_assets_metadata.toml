@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "sHO5ZhwBIT1nY_LgJftRQ"
+uri = "file://docs/sticker-designer-review.html"
+type = "html"
+title = "Sticker designer: detailed review"
+description = "Geometry findings, verified fixes, and prioritized improvements for sticker ordering."
+logical_id = "a7f27ca5-26b0-4922-b8b8-8098366e89de"
+content_hash = "sha256:920111d61130aba444afe81652da2d6f19f97efd20a7aa79d287d0b3256d0fdf"
+size = 26383
+mtime_ms = 1790607211453
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:d1a04f93-0dfd-46a0-8bc8-4e8dba44fdd3/a7f27ca5-26b0-4922-b8b8-8098366e89de/5973d199-24be-45d2-aa0b-4e98ed556853"
+storage_version_token = "1790607231763961"
+content_type = "text/html"

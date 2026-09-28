@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Sticker Designer — Shape, Proof & Ordering Review</title>
+  <style>
+    :root { --ink:#192638; --muted:#52657b; --line:#dce5eb; --paper:#fff; --bg:#f3f7f9; --teal:#087a78; --navy:#103149; --amber:#9b5a00; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:var(--bg); font:16px/1.65 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+    .hero { background:linear-gradient(125deg,#102c45,#126b72); color:#fff; padding:58px max(24px,calc((100vw - 1060px)/2)) 48px; }
+    .eyebrow { text-transform:uppercase; letter-spacing:.14em; font-size:.76rem; font-weight:750; color:#a8e9df; margin:0 0 14px; }
+    h1 { font-size:clamp(2.15rem,5vw,3.65rem); line-height:1.12; letter-spacing:-.045em; margin:0 0 16px; max-width:790px; }
+    .hero p:last-child { max-width:730px; margin:0; color:#d4e8ed; font-size:1.08rem; }
+    .layout { max-width:1120px; margin:0 auto; display:grid; grid-template-columns:220px minmax(0,1fr); gap:38px; padding:38px 24px 80px; }
+    nav { align-self:start; position:sticky; top:20px; font-size:.88rem; border-left:2px solid #cedee2; padding:7px 0 7px 17px; }
+    nav strong { display:block; margin-bottom:9px; color:var(--navy); }
+    nav a { display:block; color:#446074; text-decoration:none; padding:4px 0; }
+    nav a:hover, nav a:focus-visible { color:var(--teal); text-decoration:underline; }
+    main { min-width:0; }
+    section { background:var(--paper); border:1px solid var(--line); border-radius:16px; padding:29px 34px; margin-bottom:22px; box-shadow:0 4px 20px rgba(27,64,83,.04); }
+    h2 { font-size:1.65rem; letter-spacing:-.025em; line-height:1.3; margin:0 0 15px; color:var(--navy); }
+    h3 { font-size:1.17rem; line-height:1.35; margin:28px 0 9px; color:#14515d; }
+    h3:first-child { margin-top:0; }
+    p { margin:0 0 14px; }
+    p:last-child, ul:last-child, ol:last-child { margin-bottom:0; }
+    ul,ol { margin:8px 0 17px; padding-left:1.4em; }
+    li { padding-left:.2em; margin:0 0 10px; }
+    li::marker { color:var(--teal); font-weight:700; }
+    strong { color:#122b41; }
+    code { font:.88em/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; background:#eef4f6; border:1px solid #e1ebee; padding:.08em .3em; border-radius:4px; overflow-wrap:anywhere; }
+    .callout { padding:16px 19px; border-radius:10px; margin:16px 0; background:#e9f6f3; border-left:4px solid var(--teal); }
+    .callout.warn { background:#fff5e5; border-color:#d58a23; }
+    .callout p { margin:5px 0 0; }
+    .label { font-size:.74rem; font-weight:800; letter-spacing:.1em; text-transform:uppercase; color:var(--teal); }
+    .warn .label { color:var(--amber); }
+    .table-wrap { overflow-x:auto; margin:18px 0; border:1px solid var(--line); border-radius:10px; }
+    table { width:100%; border-collapse:collapse; font-size:.91rem; line-height:1.5; }
+    th,td { text-align:left; vertical-align:top; padding:12px 13px; border-bottom:1px solid var(--line); }
+    th { background:#eaf3f4; color:#133e4b; font-weight:750; }
+    tr:last-child td { border-bottom:0; }
+    tr:nth-child(even) td { background:#fafcfc; }
+    .flow-table { min-width:660px; }
+    .test-table { min-width:720px; }
+    .flow-table td:first-child, .test-table td:first-child { font-weight:700; color:var(--navy); min-width:125px; }
+    .priority { display:inline-block; background:#e7f2f1; border-radius:5px; font-size:.75rem; font-weight:800; letter-spacing:.07em; padding:3px 8px; color:#05635f; margin-right:6px; }
+    .priority.p0 { background:#fae9e3; color:#953923; }
+    .priority.p2 { background:#edf0fa; color:#4c5291; }
+    .recommendations li { padding-bottom:12px; border-bottom:1px solid #e8eef1; }
+    .recommendations li:last-child { border:0; padding-bottom:0; }
+    .small { color:var(--muted); font-size:.91rem; }
+    footer { font-size:.86rem; color:var(--muted); text-align:center; padding:0 24px 40px; }
+    @media (max-width:800px) { .layout { display:block; padding:20px 14px 40px; } nav { position:static; display:flex; flex-wrap:wrap; gap:2px 16px; margin:0 0 20px; border-left:0; padding:0; } nav strong { width:100%; } section { padding:22px 19px; } .hero { padding:42px 22px; } }
+    @media print { body { background:#fff; font-size:10pt; } .hero { background:#fff; color:#12334a; padding:0 0 18px; border-bottom:2px solid #217d7a; } .hero p:last-child,.eyebrow { color:#456878; } .layout { display:block; padding:12px 0; max-width:none; } nav { display:none; } section { box-shadow:none; border:0; border-radius:0; padding:10px 0; margin:0; break-inside:auto; } h2,h3,li { break-after:avoid; } table { font-size:8pt; } tr { break-inside:avoid; } .table-wrap { overflow:visible; border:0; } .flow-table,.test-table { min-width:0; } footer { padding:10px; } }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <p class="eyebrow">Product &amp; production review · Code-grounded report</p>
+    <h1>Sticker designer: shape, proof &amp; ordering</h1>
+    <p>What the designer actually does today, where cut geometry and quantities can diverge, and a prioritized route to a trustworthy ordering experience.</p>
+  </header>
+  <div class="layout">
+    <nav aria-label="Report sections">
+      <strong>In this report</strong>
+      <a href="#status">Scope &amp; status</a><a href="#today">Current experience</a>
+      <a href="#geometry">Cut geometry</a><a href="#units">Units &amp; bleed</a>
+      <a href="#proof">Preview vs proof</a><a href="#risks">Quantity &amp; persistence</a>
+      <a href="#flow">Proposed customer flow</a><a href="#priorities">Ranked improvements</a>
+      <a href="#tests">Test matrix</a><a href="#sequence">Sequencing &amp; offload</a>
+    </nav>
+    <main>
+      <section id="status">
+        <h2>Scope, evidence &amp; implementation status</h2>
+        <p>This report is based on repository code, not a live-print qualification or a claim that an ordering system has shipped. The sticker page mounts <code>ImageEditor</code> in <code>gangsheet</code> mode with spot colors enabled. Inspected paths include <code>sticker-maker.tsx</code>, the spot-UV editor, controls, preview, gang-sheet panel and their shape/contour/PDF/packing libraries, plus design and gang-sheet document persistence.</p>
+        <div class="callout">
+          <span class="label">Implementation status at report preparation</span>
+          <p><strong>Verified:</strong> 86 automated tests and the production build passed. Browser checks passed for all six shape presets, standard and single-artboard downloads, custom oval/rounded dimensions and artwork positioning, gang-sheet and individual-item exports. Local contour worker/cache parity tests passed. This is not certification of imported-PDF, locked-path, or live offload output. The recommendations below remain <strong>proposals, not implemented features</strong>.</p>
+        </div>
+        <div class="callout warn">
+          <span class="label">Live deployment boundary</span>
+          <p>The live contour offload service update remains dependent on access/coordination. Repository changes do not prove that the live VPS is running corrected code; its deployed version and outputs must be checked separately.</p>
+        </div>
+        <p class="small">No competitor-specific or production-price claims are made. File references identify inspected implementation paths, not promises of a certified print workflow.</p>
+      </section>
+
+      <section id="today">
+        <h2>What a customer can do today</h2>
+        <ol>
+          <li>Upload raster artwork or a PDF/SVG rendered for editing. PDF import may detect an existing named cut path; other imports use generated-cut options.</li>
+          <li>Set width/height in inches with aspect lock and presets, edit the image, choose Contour or Shape, configure fills/spot colors, inspect a canvas preview and download a single-design PDF. Authenticated users can save a design through <code>serializeDesign</code>.</li>
+          <li>Add the current design as an in-memory gang-sheet item. It begins at quantity 1. “Fill Sheet” increases copies of the <strong>last-added</strong> design. The panel offers quantity controls, size presets, item PDFs, gang-sheet PDFs and authenticated “Save &amp; Download.”</li>
+          <li>These are design/prepress and downloadable-asset actions, <strong>not a submitted sticker order</strong>. The inspected page/panel has no material SKU, die-cut/kiss-cut purchase selection, price, shipping, cart, payment or order confirmation.</li>
+        </ol>
+      </section>
+
+      <section id="geometry">
+        <h2>Actual shape versus contour and imported-cut paths</h2>
+        <p>A selected shape describes the <strong>cut boundary</strong>, not a guarantee that the underlying artwork has that silhouette. The relevant paths are materially different:</p>
+        <ul>
+          <li><strong>Generated Contour.</strong> <code>strokeSettings.enabled</code> requests an image/alpha-derived trace through <code>processContourInWorker</code>. Shape detection, background/alpha and trace settings affect the outcome. Cached data includes cut and preview paths, dimensions and artwork offsets. <code>downloadContourPDF</code> emits a vector spot-color cut path. Reprocessing before single export and add-to-sheet is intended to avoid a stale debounced cache; tracing quality still depends on the source and algorithm.</li>
+          <li><strong>Generated Shape.</strong> <code>shapeSettings.enabled</code> is mutually exclusive with generated Contour in the controls. Circle, oval, square, rectangle and rounded variants produce geometry around/over the design. <code>calculateShapeDimensions</code> combines image size with shape offset; overrides, corner radius, rotation, image positioning, fill and bleed influence output. <code>downloadShapePDF</code> writes a generated vector cut. Circle selects a circular trim and clipped/filled print image; it does not turn arbitrary source pixels into circular artwork.</li>
+          <li><strong>Imported cut PDF.</strong> If a PDF cut path is found, <code>handlePDFUpload</code> does not trim the page because extracted paths use untrimmed page coordinates. Controls show the detected label and suppress ordinary generated-shape settings. <code>handleDownload</code> routes to <code>generatePDFWithVectorCutContour</code> before the normal branches. It places a rasterized image and extracted page-coordinate paths into a new PDF with a vector Separation cut path; it does <em>not</em> guarantee byte-for-byte retention of original PDF content. Relabeling is not a geometry edit.</li>
+          <li><strong>Locked contour.</strong> Optional <code>lockedContour</code> is stored with saved designs and can be drawn as an <em>additional</em> labeled path in generated contour/shape exports. It is distinct from the PDF-imported cut and the active Shape choice. Its badge alone does not establish that a gang-sheet item retains it.</li>
+          <li><strong>No cut.</strong> Single-design export asks for confirmation before design-only output. On the sheet, <code>noCutPath</code> can carry a rectangle for packing without emitting a cut line. That rectangle is a footprint, not a die line.</li>
+        </ul>
+      </section>
+
+      <section id="units">
+        <h2>Units, size and bleed: three different boundaries</h2>
+        <ul>
+          <li>Editor dimensions, contour margin, shape offset/radius and overrides, sheet size, gap and padding are modeled in <strong>inches</strong>; PDF geometry is drawn in 72 points per inch. Raster operations use effective DPI or a 300-DPI shape clipping canvas. Extracted PDF paths start in page pixel coordinates and convert using page size/DPI.</li>
+          <li>Generated contour code includes a <code>0.10</code>-inch page margin around traced bounds (<code>bleedInches</code>). <code>generateShapePathPointsInches</code> adds 0.10 inch on each side of shape dimensions; shape PDF output has an outer page allowance. <strong>Page allowance is not automatically printed color bleed.</strong> Shape <code>bleedEnabled</code>/<code>bleedColor</code> control separate artwork treatment. White or transparent space outside the cut is not extended ink.</li>
+          <li>Shape size, image size and packed footprint are different. The packer places <code>contourData.widthInches/heightInches</code> (including allowance), though the visual cut can sit inside that box. Sheet defaults: 48 × 12 inches; presets extend to 48 × 60; edge padding defaults to 0.25 inch and minimum contour gap is 0.25 inch.</li>
+        </ul>
+        <p><strong>Product implication:</strong> label <em>final trim</em>, artwork extent and outer packing footprint separately. Verify cut-to-ink coverage per export mode before claiming a universal bleed guarantee or quoting a size to a buyer.</p>
+      </section>
+
+      <section id="proof">
+        <h2>Designer preview is not an approved production proof</h2>
+        <p><code>PreviewSection</code> paints artwork, cutline/spot state and sheet placements on a canvas. PDF export follows separate raster and spot-vector code and may use a higher-resolution source. A persuasive on-screen preview does not establish correct bleed, named Separation colors, closed paths, clipping, DPI or every placed copy in the actual exported file.</p>
+        <p>A real proof should be rendered from the <strong>same finalized PDF asset</strong> that production receives. It should expose cut and bleed overlays, measured trim dimensions, material/cut semantics, preflight issues and a recorded customer approval of an immutable revision. Clicking “Download” or “Save &amp; Download” is not approval. Screen color is indicative, not a calibrated color guarantee.</p>
+      </section>
+
+      <section id="risks">
+        <h2>Sticker ordering, quantity, overflow &amp; persistence risks</h2>
+        <ul>
+          <li><strong>Quantity is currently sheet copies, not a commerce quantity.</strong> <code>packGangSheet</code> returns placements and overflow from rectangular item bounds. Rotation can occur; interlocking silhouette nesting is not used. <code>expandSettingsToFit</code> grows sheet height through presets where possible. Fill Sheet targets the last item.</li>
+          <li><strong>Incomplete sheets can remain exportable.</strong> Quantity entry can be clamped with a brief warning if the maximum sheet is reached. Selecting a smaller preset can create overflow. The panel warns, but export/save are disabled only if placements are empty—not whenever overflow exists. PDF generation receives placements, while Save &amp; Download records <code>totalQuantity</code> from requested item quantities. Requested, placed, persisted and later billed counts could disagree unless a future order handoff blocks unresolved overflow.</li>
+          <li><strong>Imported cuts on gang sheets need verification.</strong> Add-to-sheet asks for worker contour data even for a PDF with an existing path, snapshots cached generated geometry when present, otherwise creates a rectangular fallback. <code>GangSheetItem</code> does not contain imported PDF <code>cutContourPoints</code> or <code>lockedContour</code>. The single-PDF preservation branch therefore cannot be assumed to carry over to sheet output. Inspect actual exported PDF paths/separations before promising this workflow.</li>
+          <li><strong>A saved design is not an approved press file.</strong> Design serialization keeps source-asset reference, settings, locked contour and spot tags. Saving a gang sheet uploads its generated PDF with dimensions, item count and total quantity; editor <code>gangSheetItems</code> remain component state rather than a reloadable itemized cart. Reopening/editing a design does not restore an approved order revision.</li>
+          <li>Spot-name collision checks between White, Gloss and CutContour help, but a unique name alone cannot certify geometry or printability.</li>
+        </ul>
+      </section>
+
+      <section id="flow">
+        <h2>Proposed customer flow <span class="small">(not implemented)</span></h2>
+        <div class="table-wrap"><table class="flow-table">
+          <thead><tr><th>Stage</th><th>Customer decision</th><th>Production contract / feedback</th></tr></thead>
+          <tbody>
+            <tr><td>1 · Material</td><td>Choose an offered material/finish; understand constraints on clear stock, white ink or special inks.</td><td>Only show supported combinations tied to a real catalog/pricing rule—not free-text PDF metadata.</td></tr>
+            <tr><td>2 · Cut type</td><td>Choose die-cut individuals or kiss-cut-on-sheet, where actually supported.</td><td>Explain backing/edge differences and validate the required cut-path semantics. A spot name such as <code>KissCut</code> alone is not a physical process selection.</td></tr>
+            <tr><td>3 · Size &amp; art</td><td>Enter final trim dimensions; upload/edit and choose traced contour, geometric shape or vetted imported cut.</td><td>Show measured trim, artwork extent, allowance, bleed, DPI and edge warnings. Preserve imported paths or request explicit conversion.</td></tr>
+            <tr><td>4 · Quantity</td><td>Request copies per design—or sheet count for a sheet-based product.</td><td>Show exact placed/remaining counts, sheet count and rotation. Never silently truncate; price the actual deliverable unit.</td></tr>
+            <tr><td>5 · Proof</td><td>Inspect finalized-PDF render, cut/bleed overlays and magnified edges.</td><td>Block critical preflight failures; require approval of an immutable revision/hash and disclose screen-color limits.</td></tr>
+            <tr><td>6 · Order</td><td>Confirm itemized material, cut, dimensions, quantity, price, proof revision and delivery details.</td><td>Store an order tied to the approved PDF and return a real identifier/status—not a download toast.</td></tr>
+          </tbody>
+        </table></div>
+        <p>The strongest differentiator is <strong>geometry the buyer can trust</strong>: consistent measurements through designer, sheet, proof and order; visible cut-versus-print distinction; traceable approval; and a clear statement of what will arrive. Do not advertise unsupported materials or processes.</p>
+      </section>
+
+      <section id="priorities">
+        <h2>Ranked improvements &amp; acceptance criteria</h2>
+        <p class="small">Everything below is a recommendation. None of these end-to-end product features is asserted to be implemented.</p>
+        <h3><span class="priority p0">P0</span> Production correctness &amp; truthful handoff</h3>
+        <ol class="recommendations">
+          <li><strong>Make cut-source selection explicit and consistent.</strong> <em>Benefit:</em> sheet and single PDF cannot silently use different die lines. <em>Accept when:</em> each item has a normalized inch-based cut source/geometry; imported multi-path cuts and intentional locked secondary paths are preserved across preview, single and sheet export or explicitly rejected; PDF checks compare path count, bounds, labels and closure after rotation. Never present a rectangular fallback as a cut.</li>
+          <li><strong>Fail closed on overflow and quantity disagreement.</strong> <em>Benefit:</em> no saved/paid job drops copies. <em>Accept when:</em> export, save and order block for overflow or unplaceable items; affected designs and requested/placed/remaining counts are named; add-sheet or reduce-quantity resolves the issue; PDF count matches persisted totals.</li>
+          <li><strong>Preflight the exported artifact and require approval.</strong> <em>Benefit:</em> production receives what the buyer approved. <em>Accept when:</em> required named separations, finite closed paths, page/trim size, alignment and printable resolution are checked; failures block order, warnings require acknowledgement, and proof/order reference one versioned PDF asset/hash.</li>
+          <li><strong>Validate bleed and size per mode.</strong> <em>Benefit:</em> fewer halos, clips and incorrect sizes. <em>Accept when:</em> UI separates trim, art and footprint; measured cut-to-print coverage warns on each edge; shape, contour, imported and gang-sheet PDFs meet agreed size tolerances.</li>
+        </ol>
+        <h3><span class="priority">P1</span> Usable ordering after correctness</h3>
+        <ol class="recommendations" start="5">
+          <li><strong>Constrained product configurator and checkout handoff.</strong> <em>Benefit:</em> a real order path. <em>Accept when:</em> combinations come from a supported catalog; price/fulfillment terms appear before approval; server validates selections and stores them with the approved asset; confirmation shows order ID and line items.</li>
+          <li><strong>Recoverable itemized job drafts.</strong> <em>Benefit:</em> multi-design work survives a return visit. <em>Accept when:</em> authenticated restore includes item sources, settings, quantities, cut-source/version, spot choices and sheet settings; missing assets are explicit errors; any edit invalidates approval and reruns packing/preflight.</li>
+          <li><strong>File-based production proof UI.</strong> <em>Benefit:</em> buyers see the actual deliverable. <em>Accept when:</em> a finalized-PDF render offers art/trim/bleed/backing views, dimensions and placed counts with explicit revision approval; the screen mockup and color limitations are distinguished.</li>
+        </ol>
+        <h3><span class="priority p2">P2</span> Differentiation &amp; polish</h3>
+        <ol class="recommendations" start="8">
+          <li><strong>Guided contour repair.</strong> <em>Benefit:</em> fix difficult art without hiding risk. <em>Accept when:</em> tiny islands, holes, thin bridges, excessive nodes and ambiguous backgrounds identify affected regions and reversible choices; inspected PDF geometry matches the selection.</li>
+          <li><strong>Honest sheet-efficiency guidance.</strong> <em>Benefit:</em> informed size/quantity decisions. <em>Accept when:</em> supported sheet sizes, required sheets, area utilization, remaining copies and rotation are shown while enforcing clearance; no claim of silhouette nesting.</li>
+          <li><strong>Traceability and accessible controls.</strong> <em>Benefit:</em> easier support and repeat orders. <em>Accept when:</em> revision history links decisions, hash, preflight and approval to an order; keyboard and screen-reader users can select cut source, inspect issues and approve without canvas/color-only cues.</li>
+        </ol>
+      </section>
+
+      <section id="tests">
+        <h2>Test matrix for release review</h2>
+        <div class="table-wrap"><table class="test-table">
+          <thead><tr><th>Input / scenario</th><th>Preview &amp; measurements</th><th>Export / order invariant</th></tr></thead>
+          <tbody>
+            <tr><td>Opaque raster with white background; irregular transparent PNG</td><td>Compare Shape, Contour and background removal; inspect fine detail.</td><td>Correct source, no accidental page box, sufficient ink beyond cut.</td></tr>
+            <tr><td>Circle, oval, square, rounded rectangle; overrides/rotation</td><td>Label trim, art and footprint; verify rotated extents.</td><td>Closed named vectors with correct size/radius/alignment.</td></tr>
+            <tr><td>PDF with one/multiple imported cuts; custom label</td><td>Show imported path without silent substitution.</td><td>Single and sheet preserve intended paths/labels or reject explicitly.</td></tr>
+            <tr><td>Locked secondary contour; White/Gloss layers</td><td>Distinguish primary/secondary cuts; show name conflicts.</td><td>Distinct expected separations; no lost/merged path.</td></tr>
+            <tr><td>Tiny, huge, low-DPI or edited artwork</td><td>Show effective DPI, islands/holes and bleed warnings.</td><td>No invalid/out-of-bounds cuts, silent scaling or false approval.</td></tr>
+            <tr><td>Mixed items, rotation, Fill Sheet, maximum sheet</td><td>Requested, placed, remaining and utilization visible.</td><td>All copies present or blocked; metadata equals PDF count.</td></tr>
+            <tr><td>No-cut-path artwork</td><td>Explicit “no cut”; footprint is not a die line.</td><td>Intentional design-only output; no phantom CutContour.</td></tr>
+            <tr><td>Save/reopen/edit after approval; unauthenticated user</td><td>Draft and approval status explicit.</td><td>Immutable approval; edits require new proof; missing assets surfaced.</td></tr>
+          </tbody>
+        </table></div>
+        <p>Inspect PDF paths and separations programmatically <strong>and</strong> render exported files for edge inspection. Test both local worker and offload against one geometry contract. Existing repository tests are starting points, not proof of live print-device accuracy.</p>
+      </section>
+
+      <section id="sequence">
+        <h2>Implementation sequencing &amp; offload unknown</h2>
+        <ol>
+          <li>Document a single cut/trim/artwork coordinate contract; reproduce single-versus-sheet and overflow discrepancies in artifact-level tests.</li>
+          <li>Finish verifying local geometry paths, then normalize imported, locked and generated cuts. Eliminate silent fallback and recheck preview-to-PDF and bleed behavior.</li>
+          <li>Enforce quantity/overflow rules and exported-artifact preflight before a commerce handoff.</li>
+          <li>Build catalog, pricing and order persistence; follow with versioned proof approval, recoverable drafts and guided optimization.</li>
+        </ol>
+        <p>The browser prefers a healthy offload service for tracing, with worker/main-thread fallback in <code>contour-worker-manager.ts</code>. Local contour worker/cache parity correction and shape-parity verification are <strong>not</strong> a blanket production sign-off. The live VPS update remains separately blocked pending deployment access/coordination; identify its version and test deployed output before reporting it fixed.</p>
+      </section>
+    </main>
+  </div>
+  <footer>Standalone offline report · Inline styles · No external assets · Recommendations are not implementation claims.</footer>
+</body>
+</html>

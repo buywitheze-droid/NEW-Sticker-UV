@@ -7,8 +7,8 @@ import SizeInput from "@/components/image-editor/size-input";
 import { ImageInfo, StrokeSettings, ResizeSettings, ShapeSettings, type LockedContour, type SegmentationData } from "./image-editor";
 import { SpotPreviewData } from "./controls-section";
 import { CadCutBounds } from "./lib/cadcut-bounds";
-import { processPreviewContourInWorker, getPreviewContourWorkerManager, type DetectedAlgorithm, type DetectedShapeInfo } from "./lib/contour-worker-manager";
-import { calculateShapeDimensions } from "./lib/shape-outline";
+import { processContourInWorker, type DetectedAlgorithm, type DetectedShapeInfo } from "./lib/contour-worker-manager";
+import { resolveShapeDimensions, traceShapeCanvasPath } from "./lib/shape-outline";
 import { cropImageToContent, getImageBounds } from "./lib/image-crop";
 import { convertPolygonToCurves, gaussianSmoothContour } from "./lib/clipper-path";
 import { drawVectorQRsOnCanvas2D } from "./lib/qr";
@@ -538,12 +538,12 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     };
 
     // Version bump forces cache invalidation when worker code changes
-    const CONTOUR_CACHE_VERSION = 31;
+    const CONTOUR_CACHE_VERSION = 32;
     const generateContourCacheKey = useCallback(() => {
       if (!imageInfo) return '';
       const bboxKey = detectedShapeInfo ? `${detectedShapeInfo.boundingBox.x},${detectedShapeInfo.boundingBox.y},${detectedShapeInfo.boundingBox.width},${detectedShapeInfo.boundingBox.height}` : 'none';
-      return `v${CONTOUR_CACHE_VERSION}-${imageInfo.image.src}-${imageInfo.originalWidth}x${imageInfo.originalHeight}-${strokeSettings.width}-${strokeSettings.alphaThreshold}-${strokeSettings.backgroundColor}-${strokeSettings.useCustomBackground}-${strokeSettings.contourMode}-${strokeSettings.autoBridging}-${strokeSettings.autoBridgingThreshold}-${strokeSettings.includeHoles}-${resizeSettings.widthInches}-${resizeSettings.heightInches}-shape:${detectedShapeType || 'none'}-bbox:${bboxKey}`;
-    }, [imageInfo, strokeSettings.width, strokeSettings.alphaThreshold, strokeSettings.backgroundColor, strokeSettings.useCustomBackground, strokeSettings.contourMode, strokeSettings.autoBridging, strokeSettings.autoBridgingThreshold, strokeSettings.includeHoles, resizeSettings.widthInches, resizeSettings.heightInches, detectedShapeType, detectedShapeInfo]);
+      return `v${CONTOUR_CACHE_VERSION}-${imageInfo.image.src}-${imageInfo.originalWidth}x${imageInfo.originalHeight}-${strokeSettings.width}-${strokeSettings.color}-${strokeSettings.alphaThreshold}-${strokeSettings.backgroundColor}-${strokeSettings.useCustomBackground}-${strokeSettings.contourMode}-${strokeSettings.cornerMode}-${strokeSettings.autoBridging}-${strokeSettings.autoBridgingThreshold}-${strokeSettings.includeHoles}-${resizeSettings.widthInches}-${resizeSettings.heightInches}-${resizeSettings.maintainAspectRatio}-${resizeSettings.outputDPI}-shape:${detectedShapeType || 'none'}-bbox:${bboxKey}`;
+    }, [imageInfo, strokeSettings.width, strokeSettings.color, strokeSettings.alphaThreshold, strokeSettings.backgroundColor, strokeSettings.useCustomBackground, strokeSettings.contourMode, strokeSettings.cornerMode, strokeSettings.autoBridging, strokeSettings.autoBridgingThreshold, strokeSettings.includeHoles, resizeSettings.widthInches, resizeSettings.heightInches, resizeSettings.maintainAspectRatio, resizeSettings.outputDPI, detectedShapeType, detectedShapeInfo]);
 
     const contourRequestKey = generateContourCacheKey();
     const contourPendingRef = useRef(false);
@@ -594,18 +594,11 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         setIsProcessing(true);
         setProcessingProgress(1);
 
-        const previewStrokeSettings = { ...strokeSettings, color: '#FF00FF' };
-        const workerResizeSettings = {
-          widthInches: resizeSettings.widthInches,
-          heightInches: resizeSettings.heightInches,
-          maintainAspectRatio: resizeSettings.maintainAspectRatio,
-          outputDPI: 100
-        };
-
-        processPreviewContourInWorker(
+        // Match the export snapshot rather than the display-only .02" trace.
+        processContourInWorker(
           imageInfo.image,
-          previewStrokeSettings,
-          workerResizeSettings,
+          strokeSettings,
+          resizeSettings,
           (progress) => {
             if (processingIdRef.current === currentId) {
               setProcessingProgress(progress);
@@ -615,7 +608,25 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
           detectedShapeInfo
         ).then((result) => {
           if (processingIdRef.current === currentId) {
-            contourCacheRef.current = { key: cacheKey, canvas: result.canvas, downsampleScale: result.downsampleScale, imageCanvasX: result.imageCanvasX, imageCanvasY: result.imageCanvasY };
+            if (!result.contourData) throw new Error('Contour worker did not return export geometry');
+            const display = document.createElement('canvas');
+            display.width = result.canvas.width;
+            display.height = result.canvas.height;
+            const displayCtx = display.getContext('2d');
+            if (!displayCtx) throw new Error('Could not draw the contour preview');
+            displayCtx.drawImage(result.canvas, 0, 0);
+            displayCtx.strokeStyle = '#FF00FF';
+            displayCtx.lineWidth = 1.5;
+            for (const path of result.contourData.allPreviewPathPoints?.length
+              ? result.contourData.allPreviewPathPoints : [result.contourData.previewPathPoints]) {
+              if (path.length < 3) continue;
+              displayCtx.beginPath();
+              displayCtx.moveTo(path[0].x, path[0].y);
+              for (let i = 1; i < path.length; i++) displayCtx.lineTo(path[i].x, path[i].y);
+              displayCtx.closePath();
+              displayCtx.stroke();
+            }
+            contourCacheRef.current = { key: cacheKey, canvas: display, downsampleScale: result.downsampleScale, imageCanvasX: result.imageCanvasX, imageCanvasY: result.imageCanvasY };
             contourPendingRef.current = false;
             setIsProcessing(false);
             if (result.detectedAlgorithm && onDetectedAlgorithm) {
@@ -634,7 +645,6 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       
       return () => {
         ++processingIdRef.current;
-        getPreviewContourWorkerManager().cancelInFlight('Preview inputs changed');
         if (contourDebounceRef.current) {
           clearTimeout(contourDebounceRef.current);
         }
@@ -1002,11 +1012,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         let transformPts: (pts: Array<{x: number; y: number}>) => Array<{x: number; y: number}>;
 
         if (shapeSettings.enabled && imageInfo) {
-          let shapeDims = calculateShapeDimensions(
-            resizeSettings.widthInches, resizeSettings.heightInches, shapeSettings.type, shapeSettings.offset
-          );
-          if (shapeSettings.shapeWidthOverride && shapeSettings.shapeWidthOverride > 0) shapeDims = { widthInches: shapeSettings.shapeWidthOverride, heightInches: shapeDims.heightInches };
-          if (shapeSettings.shapeHeightOverride && shapeSettings.shapeHeightOverride > 0) shapeDims = { widthInches: shapeDims.widthInches, heightInches: shapeSettings.shapeHeightOverride };
+          const shapeDims = resolveShapeDimensions(shapeSettings, resizeSettings);
           const viewPad = Math.max(4, Math.round(Math.min(canvas.width, canvas.height) * 0.03));
           const availW = canvas.width - (viewPad * 2);
           const availH = canvas.height - (viewPad * 2);
@@ -1269,15 +1275,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     const drawShapePreview = (ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number) => {
       if (!imageInfo) return;
 
-      let shapeDims = calculateShapeDimensions(
-        resizeSettings.widthInches, resizeSettings.heightInches, shapeSettings.type, shapeSettings.offset
-      );
-      if (shapeSettings.shapeWidthOverride && shapeSettings.shapeWidthOverride > 0) {
-        shapeDims = { widthInches: shapeSettings.shapeWidthOverride, heightInches: shapeDims.heightInches };
-      }
-      if (shapeSettings.shapeHeightOverride && shapeSettings.shapeHeightOverride > 0) {
-        shapeDims = { widthInches: shapeDims.widthInches, heightInches: shapeSettings.shapeHeightOverride };
-      }
+      const shapeDims = resolveShapeDimensions(shapeSettings, resizeSettings);
 
       const bleedInches = 0.10;
       const shapeAspect = shapeDims.widthInches / shapeDims.heightInches;
@@ -1310,24 +1308,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       const imageY = shapeY + (shapeHeight - imageHeight) / 2 + (shapeSettings.imageOffsetY || 0) * ppi;
 
       const buildPath = (ctx: CanvasRenderingContext2D, sw: number, sh: number, sx: number, sy: number, cr: number) => {
-        const type = shapeSettings.type;
-        ctx.beginPath();
-        if (type === 'circle') {
-          const r = Math.min(sw, sh) / 2;
-          ctx.arc(sx + sw / 2, sy + sh / 2, r, 0, Math.PI * 2);
-        } else if (type === 'oval') {
-          ctx.ellipse(sx + sw / 2, sy + sh / 2, sw / 2, sh / 2, 0, 0, Math.PI * 2);
-        } else if (type === 'square') {
-          const size = Math.min(sw, sh);
-          ctx.rect(sx + (sw - size) / 2, sy + (sh - size) / 2, size, size);
-        } else if (type === 'rounded-square') {
-          const size = Math.min(sw, sh);
-          ctx.roundRect(sx + (sw - size) / 2, sy + (sh - size) / 2, size, size, cr);
-        } else if (type === 'rounded-rectangle') {
-          ctx.roundRect(sx, sy, sw, sh, cr);
-        } else {
-          ctx.rect(sx, sy, sw, sh);
-        }
+        traceShapeCanvasPath(ctx, shapeSettings.type, sx, sy, sw, sh, cr);
       };
 
       const applyRotation = () => {
@@ -1376,15 +1357,6 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         ctx.restore();
       }
 
-      // CutContour outline
-      ctx.save();
-      applyRotation();
-      ctx.strokeStyle = '#FF00FF';
-      ctx.lineWidth = 2;
-      buildPath(ctx, shapeWidth, shapeHeight, shapeX, shapeY, cornerRadiusPx);
-      ctx.stroke();
-      ctx.restore();
-
       // Clipped image
       ctx.save();
       applyRotation();
@@ -1417,6 +1389,16 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
           ctx.restore();
         }
       }
+      ctx.restore();
+
+      // The PDF strokes CutContour *after* drawing the artwork. Do the same
+      // here: ink touching the die edge must not paint over the preview line.
+      ctx.save();
+      applyRotation();
+      ctx.strokeStyle = '#FF00FF';
+      ctx.lineWidth = 2;
+      buildPath(ctx, shapeWidth, shapeHeight, shapeX, shapeY, cornerRadiusPx);
+      ctx.stroke();
       ctx.restore();
     };
 

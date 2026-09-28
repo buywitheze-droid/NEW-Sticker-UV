@@ -2344,8 +2344,10 @@ export async function downloadContourPDF(
     let holePathStartIndex: number | undefined;
     {
       const workerManager = getContourWorkerManager();
-      const contourData = workerManager.getCachedContourData();
-      if (contourData) {
+      const contourData = cachedContourData ?? workerManager.getCachedContourData();
+      if (contourData && contourData.pathPoints?.length >= 3 &&
+          Number.isFinite(contourData.widthInches) && contourData.widthInches > 0 &&
+          Number.isFinite(contourData.heightInches) && contourData.heightInches > 0) {
         console.log('[downloadContourPDF] Using cached preview contour data (instant)');
         pathPoints = contourData.pathPoints;
         previewPathPoints = contourData.previewPathPoints;
@@ -2362,8 +2364,7 @@ export async function downloadContourPDF(
         bleedInches = contourData.bleedInches;
         holePathStartIndex = contourData.holePathStartIndex;
       } else {
-        console.error('[downloadContourPDF] No contour data available - generate preview first');
-        return;
+        throw new Error('No valid contour snapshot available - generate preview first');
       }
     }
     
@@ -2857,7 +2858,9 @@ export async function generateContourPDFBase64(
   let minPathY: number;
   let bleedInches: number;
   let holePathStartIndex: number | undefined;
-  if (cachedContourData && cachedContourData.pathPoints.length > 0) {
+  if (cachedContourData && cachedContourData.pathPoints?.length >= 3 &&
+      Number.isFinite(cachedContourData.widthInches) && cachedContourData.widthInches > 0 &&
+      Number.isFinite(cachedContourData.heightInches) && cachedContourData.heightInches > 0) {
     console.log('[generateContourPDFBase64] Using cached contour data for fast export');
     pathPoints = cachedContourData.pathPoints;
     previewPathPoints = cachedContourData.previewPathPoints;
@@ -2875,8 +2878,8 @@ export async function generateContourPDFBase64(
     holePathStartIndex = cachedContourData.holePathStartIndex;
   } else {
     const workerManager = getContourWorkerManager();
-    const contourData = workerManager.getCachedContourData();
-    if (contourData) {
+    const contourData = cachedContourData ? null : workerManager.getCachedContourData();
+    if (contourData && contourData.pathPoints?.length >= 3) {
       pathPoints = contourData.pathPoints;
       previewPathPoints = contourData.previewPathPoints;
       allPathPoints = contourData.allPathPoints;

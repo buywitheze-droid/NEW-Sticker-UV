@@ -13,10 +13,10 @@ const MAX_PROCESSING_DIMENSION = 4000;
 // the silhouette accurately.
 const MAX_FALLBACK_DIMENSION = 1500;
 
-function downsampleImage(image: HTMLImageElement): { canvas: HTMLCanvasElement; scale: number } {
+function downsampleImage(image: HTMLImageElement, maxProcessingDimension = MAX_PROCESSING_DIMENSION): { canvas: HTMLCanvasElement; scale: number } {
   const maxDim = Math.max(image.width, image.height);
   
-  if (maxDim <= MAX_PROCESSING_DIMENSION) {
+  if (maxDim <= maxProcessingDimension) {
     const canvas = document.createElement('canvas');
     canvas.width = image.width;
     canvas.height = image.height;
@@ -25,7 +25,7 @@ function downsampleImage(image: HTMLImageElement): { canvas: HTMLCanvasElement; 
     return { canvas, scale: 1 };
   }
   
-  const scale = MAX_PROCESSING_DIMENSION / maxDim;
+  const scale = maxProcessingDimension / maxDim;
   const newWidth = Math.round(image.width * scale);
   const newHeight = Math.round(image.height * scale);
   
@@ -313,7 +313,15 @@ class ContourWorkerManager {
     detectedShapeType?: DetectedShapeType,
     detectedShapeInfo?: DetectedShapeInfo | null
   ): Promise<{ canvas: HTMLCanvasElement; downsampleScale: number; imageCanvasX: number; imageCanvasY: number; contourData?: ContourData; detectedAlgorithm?: DetectedAlgorithm }> {
-    const processKey = `${image.src}|${image.width}x${image.height}|${strokeSettings.width}|${strokeSettings.enabled}|${strokeSettings.alphaThreshold}|${strokeSettings.backgroundColor}|${strokeSettings.autoBridging}|${strokeSettings.autoBridgingThreshold}|${strokeSettings.contourMode}|${strokeSettings.cornerMode}|${resizeSettings.widthInches}|${resizeSettings.heightInches}|${detectedShapeType}|${(strokeSettings as any).includeHoles}`;
+    const processKey = JSON.stringify([
+      image.src, image.width, image.height, strokeSettings.width, strokeSettings.color,
+      strokeSettings.enabled, strokeSettings.alphaThreshold, strokeSettings.backgroundColor,
+      strokeSettings.useCustomBackground, strokeSettings.autoBridging,
+      strokeSettings.autoBridgingThreshold, strokeSettings.contourMode, strokeSettings.cornerMode,
+      (strokeSettings as any).includeHoles, resizeSettings.widthInches,
+      resizeSettings.heightInches, resizeSettings.maintainAspectRatio, resizeSettings.outputDPI,
+      detectedShapeType, detectedShapeInfo?.boundingBox,
+    ]);
     if (this.lastProcessKey === processKey && this.lastProcessResult) {
       return this.lastProcessResult;
     }
@@ -324,8 +332,8 @@ class ContourWorkerManager {
     await this.workerHealthReady;
 
     if (!this.worker) {
-      const canvas = await this.processFallback(image, strokeSettings, resizeSettings, onProgress);
-      const fallbackResult = { canvas, downsampleScale: 1, imageCanvasX: 0, imageCanvasY: 0 };
+      const fallbackResult = await this.processFallback(image, strokeSettings, resizeSettings, onProgress, detectedShapeType, detectedShapeInfo);
+      this.cachedContourData = fallbackResult.contourData ?? null;
       this.lastProcessKey = processKey;
       this.lastProcessResult = fallbackResult;
       return fallbackResult;
@@ -362,7 +370,9 @@ class ContourWorkerManager {
       strokeSettings,
       effectiveDPI: effectiveDPI,
       resizeSettings: { ...resizeSettings, outputDPI: effectiveDPI },
-      previewMode: true,
+      // The same geometry (including the 0.10-inch PDF bleed) is used for
+      // both the rendered preview and export. Do not trace a second mode.
+      previewMode: false,
       detectedShapeType,
       detectedShapeInfo: scaledShapeInfo
     };
@@ -447,35 +457,12 @@ class ContourWorkerManager {
     },
     resizeSettings: ResizeSettings,
     onProgress?: ProgressCallback,
-  ): Promise<HTMLCanvasElement> {
-    let processImage = image;
-    const maxDim = Math.max(image.width, image.height);
-
-    // Main-thread fallback ⇒ much tighter cap than the worker path. The
-    // silhouette pipeline is O(W*H) and synchronous; without this, a
-    // 3000–4000 px design freezes the UI for minutes.
-    if (maxDim > MAX_FALLBACK_DIMENSION) {
-      const scale = MAX_FALLBACK_DIMENSION / maxDim;
-      const newWidth = Math.round(image.width * scale);
-      const newHeight = Math.round(image.height * scale);
-
-      console.log(`[ContourFallback] Downsampling from ${image.width}x${image.height} to ${newWidth}x${newHeight} (scale=${scale.toFixed(3)})`);
-
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = newWidth;
-      tempCanvas.height = newHeight;
-      const tempCtx = tempCanvas.getContext('2d')!;
-      tempCtx.imageSmoothingEnabled = true;
-      tempCtx.imageSmoothingQuality = 'high';
-      tempCtx.drawImage(image, 0, 0, newWidth, newHeight);
-
-      processImage = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error('Failed to decode downsampled fallback image'));
-        img.src = tempCanvas.toDataURL('image/png');
-      });
-    }
+    detectedShapeType?: DetectedShapeType,
+    detectedShapeInfo?: DetectedShapeInfo | null,
+  ): Promise<{ canvas: HTMLCanvasElement; downsampleScale: number; imageCanvasX: number; imageCanvasY: number; contourData: ContourData; detectedAlgorithm: DetectedAlgorithm }> {
+    const { canvas, scale } = downsampleImage(image, MAX_FALLBACK_DIMENSION);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Could not get fallback canvas context');
 
     onProgress?.(0.05);
     // Yield once so React can paint the "Processing... 0%" state and any
@@ -483,14 +470,24 @@ class ContourWorkerManager {
     // synchronous trace.
     await new Promise<void>((r) => setTimeout(r, 0));
 
-    const { createSilhouetteContour } = await import('./contour-outline');
-    const fullStrokeSettings = { ...strokeSettings, cornerMode: 'rounded' as const };
+    const { processContour } = await import('./contour-trace-core');
     onProgress?.(0.15);
-    const t0 = performance.now();
-    const result = createSilhouetteContour(processImage, fullStrokeSettings, resizeSettings);
-    console.log(`[ContourFallback] createSilhouetteContour finished in ${(performance.now() - t0).toFixed(0)} ms (input ${processImage.width}x${processImage.height})`);
+    const dpi = Math.min(canvas.width / resizeSettings.widthInches, canvas.height / resizeSettings.heightInches);
+    const bbox = detectedShapeInfo?.boundingBox;
+    const scaledBBox = bbox ? {
+      x: Math.round(bbox.x * scale), y: Math.round(bbox.y * scale),
+      width: Math.round(bbox.width * scale), height: Math.round(bbox.height * scale),
+    } : null;
+    const result = processContour(ctx.getImageData(0, 0, canvas.width, canvas.height), strokeSettings, dpi, false, detectedShapeType, scaledBBox);
+    const output = document.createElement('canvas');
+    output.width = result.imageData.width;
+    output.height = result.imageData.height;
+    const outputCtx = output.getContext('2d');
+    if (!outputCtx) throw new Error('Could not get fallback result canvas context');
+    outputCtx.putImageData(result.imageData, 0, 0);
     onProgress?.(1);
-    return result;
+    return { canvas: output, downsampleScale: scale, imageCanvasX: result.imageCanvasX,
+      imageCanvasY: result.imageCanvasY, contourData: result.contourData, detectedAlgorithm: result.detectedAlgorithm };
   }
 
   terminate() {
