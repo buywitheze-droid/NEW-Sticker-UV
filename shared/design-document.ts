@@ -11,7 +11,7 @@ export const strokeSettingsSchema = z.object({
   alphaThreshold: z.number(),
   backgroundColor: z.string(),
   useCustomBackground: z.boolean(),
-  cornerMode: z.literal("rounded"),
+  cornerMode: z.enum(["sharp", "balanced", "rounded"]),
   autoBridging: z.boolean(),
   autoBridgingThreshold: z.number(),
   contourMode: z.enum(["smooth", "scattered"]).optional(),

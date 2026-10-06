@@ -1,5 +1,6 @@
 import { closeContourInlets } from "../../../lib/contour-inlet-closing";
 import { dilateDisk } from '../../../lib/binary-dilation';
+import { smoothContourCorners, type CornerStyle } from '../../../lib/contour-corners';
 // Shared contour-tracing algorithm, extracted from contour-worker.ts so both the browser worker and a future Node.js service can use the same code.
 import ClipperLib from 'js-clipper';
 import { fitCompositeShape } from './composite-shape-fit';
@@ -25,6 +26,7 @@ export interface WorkerMessage {
     autoBridging: boolean;
     autoBridgingThreshold: number;
     contourMode?: 'smooth' | 'scattered';
+    cornerMode?: CornerStyle;
     includeHoles?: boolean;
   };
   effectiveDPI: number;
@@ -347,6 +349,7 @@ export function processContour(
     autoBridging: boolean;
     autoBridgingThreshold: number;
     contourMode?: 'smooth' | 'scattered';
+    cornerMode?: CornerStyle;
     includeHoles?: boolean;
   },
   effectiveDPI: number,
@@ -1267,7 +1270,7 @@ export function processContour(
     smoothedPath, Math.max(autoBridgePixels, bleedPixels), vectorCloseMerge,
   );
 
-  if (effectiveMode === 'smooth') {
+  if (effectiveMode === 'smooth' && !strokeSettings.cornerMode) {
     const compositeResult = fitCompositeShape(smoothedPath, effectiveDPI);
     if (compositeResult.fitted) {
       smoothedPath = compositeResult.path;
@@ -1277,7 +1280,9 @@ export function processContour(
     }
   }
 
-  if (effectiveMode === 'scattered') {
+  if (strokeSettings.cornerMode) {
+    smoothedPath = smoothContourCorners(smoothedPath, strokeSettings.cornerMode, effectiveDPI);
+  } else if (effectiveMode === 'scattered') {
     const iterations = 3;
     for (let iter = 0; iter < iterations; iter++) {
       const result: Array<{x: number; y: number}> = [];

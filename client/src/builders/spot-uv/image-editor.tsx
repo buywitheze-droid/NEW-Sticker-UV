@@ -89,7 +89,7 @@ export default function ImageEditor({
     alphaThreshold: 128, // Auto-detected from alpha channel
     backgroundColor: "#ffffff", // Default white background for contour
     useCustomBackground: true, // Default to solid background color
-    cornerMode: 'rounded',
+    cornerMode: 'balanced',
     autoBridging: true, // Auto-bridge narrow gaps in contour
     autoBridgingThreshold: 0.02, // Gap threshold in inches
     contourMode: undefined,
@@ -796,7 +796,7 @@ export default function ImageEditor({
       alphaThreshold: 128,
       backgroundColor: "#ffffff",
       useCustomBackground: true,
-      cornerMode: 'rounded',
+      cornerMode: 'balanced',
       autoBridging: true,
       autoBridgingThreshold: 0.02,
       contourMode: undefined,
@@ -982,7 +982,7 @@ export default function ImageEditor({
       alphaThreshold: 128,
       backgroundColor: "#ffffff",
       useCustomBackground: true,
-      cornerMode: 'rounded',
+      cornerMode: 'balanced',
       autoBridging: true,
       autoBridgingThreshold: 0.02,
       contourMode: undefined,
@@ -1063,7 +1063,7 @@ export default function ImageEditor({
       alphaThreshold: 128,
       backgroundColor: "#ffffff",
       useCustomBackground: true,
-      cornerMode: 'rounded',
+      cornerMode: 'balanced',
       autoBridging: true,
       autoBridgingThreshold: 0.02,
       contourMode: undefined,

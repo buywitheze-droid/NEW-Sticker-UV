@@ -728,6 +728,37 @@ export default function ControlsSection({
                   </div>
                   
                   <div>
+                    <Label htmlFor="corner-style" className="text-xs text-gray-500 font-medium">Corner Style</Label>
+                    <Select
+                      value={strokeSettings.cornerMode}
+                      disabled={strokeSettings.width === 0}
+                      onValueChange={(value) => {
+                        if (strokeSettings.width !== 0 && (value === 'sharp' || value === 'balanced' || value === 'rounded')) {
+                          onStrokeChange({ cornerMode: value });
+                        }
+                      }}
+                    >
+                      <SelectTrigger
+                        id="corner-style"
+                        data-testid="select-corner-style"
+                        aria-describedby="corner-style-help"
+                        className="mt-2 bg-gray-50 border-gray-200 text-gray-900 text-sm rounded-lg"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="sharp" data-testid="corner-style-sharp">Sharp</SelectItem>
+                        <SelectItem value="balanced" data-testid="corner-style-balanced">Balanced</SelectItem>
+                        <SelectItem value="rounded" data-testid="corner-style-rounded">Rounded</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p id="corner-style-help" data-testid="corner-style-help" className="mt-2 text-[11px] leading-snug text-gray-500">
+                      Controls extra smoothing. Larger margins still round tips; narrow-notch safeguards remain.
+                      {strokeSettings.width === 0 && ' Unavailable at zero margin: post-offset smoothing is bypassed.'}
+                    </p>
+                  </div>
+
+                  <div>
                     <Label className="text-xs text-gray-500 font-medium">Fill Color</Label>
                     <div className="flex items-center gap-3 mt-2">
                       <input

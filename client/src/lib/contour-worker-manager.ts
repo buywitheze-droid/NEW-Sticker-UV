@@ -139,6 +139,7 @@ interface ProcessRequest {
     autoBridging: boolean;
     autoBridgingThreshold: number;
     contourMode?: ContourMode;
+    cornerMode?: string;
   };
   effectiveDPI: number;
   resizeSettings: ResizeSettings;
@@ -402,6 +403,8 @@ class ContourWorkerManager {
 
   // VPS tier, above the existing worker/main-thread ladder — falls straight through to the worker on any offload failure, so a flaky/unconfigured VPS never blocks tracing.
   private async processWithOffloadFallback(request: ProcessRequest, onProgress?: ProgressCallback): Promise<WorkerResult> {
+    // Do not send explicit styles to an offload service without capability negotiation.
+    if (request.strokeSettings.cornerMode) return this.processInWorker(request, onProgress);
     if (await offloadHealthy()) {
       try {
         const result = await traceContourViaOffload(request);

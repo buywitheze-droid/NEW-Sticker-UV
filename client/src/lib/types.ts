@@ -66,7 +66,7 @@ export interface StrokeSettings {
   alphaThreshold: number;
   backgroundColor: string;
   useCustomBackground: boolean;
-  cornerMode: 'rounded';
+  cornerMode: 'sharp' | 'balanced' | 'rounded';
   autoBridging: boolean;
   autoBridgingThreshold: number;
   contourMode?: ContourMode;

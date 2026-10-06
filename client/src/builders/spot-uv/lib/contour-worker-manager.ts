@@ -144,6 +144,7 @@ interface ProcessRequest {
     autoBridging: boolean;
     autoBridgingThreshold: number;
     contourMode?: ContourMode;
+    cornerMode?: string;
   };
   effectiveDPI: number;
   resizeSettings: ResizeSettings;
@@ -482,7 +483,9 @@ class ContourWorkerManager {
 
   // VPS tier, above the existing worker/main-thread ladder — falls straight through to the worker on any offload failure, so a flaky/unconfigured VPS never blocks tracing.
   private async processWithOffloadFallback(request: ProcessRequest, onProgress?: ProgressCallback): Promise<WorkerResult> {
-    if (this.displayOnly) {
+    if (this.displayOnly || request.strokeSettings.cornerMode) {
+      // The deployed offload service has no corner-style capability handshake.
+      // Explicit styles must use the local core, not silently lose the setting.
       // Preview work is deliberately local. The preview is already capped to
       // the worker's 400px limit above, so a VPS health probe plus PNG
       // encode/upload roundtrip only adds latency and can race cancellation.
