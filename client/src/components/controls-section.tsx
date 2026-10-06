@@ -703,26 +703,16 @@ export default function ControlsSection({
                       value={strokeSettings.width.toString()}
                       onValueChange={(value) => onStrokeChange({ width: parseFloat(value) })}
                     >
-                      <SelectTrigger className="mt-2 bg-gray-50 border-gray-200 text-gray-900 text-sm rounded-lg">
+                      <SelectTrigger aria-label="Contour Margin" className="mt-2 bg-gray-50 border-gray-200 text-gray-900 text-sm rounded-lg">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {detectedAlgorithm === 'scattered' ? (
-                          <>
-                            <SelectItem value="0.07">Small</SelectItem>
-                            <SelectItem value="0.14">Medium</SelectItem>
-                            <SelectItem value="0.25">Large</SelectItem>
-                          </>
-                        ) : (
-                          <>
-                            <SelectItem value="0">Zero Hero</SelectItem>
-                            <SelectItem value="0.02">Small</SelectItem>
-                            <SelectItem value="0.04">Medium</SelectItem>
-                            <SelectItem value="0.07">Large</SelectItem>
-                            <SelectItem value="0.14">Extra Large</SelectItem>
-                            <SelectItem value="0.25">Huge</SelectItem>
-                          </>
-                        )}
+                        <SelectItem value="0">Zero Hero — 0″</SelectItem>
+                        <SelectItem value="0.02">Small — 0.02″</SelectItem>
+                        <SelectItem value="0.04">Medium — 0.04″</SelectItem>
+                        <SelectItem value="0.07">Large — 0.07″</SelectItem>
+                        <SelectItem value="0.14">Extra Large — 0.14″</SelectItem>
+                        <SelectItem value="0.25">Huge — 0.25″</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>

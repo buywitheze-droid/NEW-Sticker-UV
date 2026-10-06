@@ -324,30 +324,7 @@ export default function ImageEditor({ onDesignUploaded }: { onDesignUploaded?: (
     }
   }, [showCutLabelDropdown, showApplyAddDropdown]);
 
-  // Keep `strokeSettings.width` aligned with the option list that the Contour
-  // Margin dropdown will actually render. The list narrows when
-  // `detectedAlgorithm` flips to 'scattered' (smaller margins look cluttered
-  // on multi-blob designs, and Zero Hero in particular produces dozens of
-  // tiny per-component outlines). If the saved width isn't in the new list,
-  // shadcn's <Select> renders an empty box — that's the bug we're fixing.
-  // We snap to the closest valid option whenever the algorithm transitions.
-  useEffect(() => {
-    const validForScattered = [0.07, 0.14, 0.25];
-    const validForComplex = [0, 0.02, 0.04, 0.07, 0.14, 0.25];
-    const valid = detectedAlgorithm === 'scattered' ? validForScattered : validForComplex;
-    if (valid.includes(strokeSettings.width)) return;
-    let nearest = valid[0];
-    let minDiff = Math.abs(strokeSettings.width - nearest);
-    for (const v of valid) {
-      const d = Math.abs(strokeSettings.width - v);
-      if (d < minDiff) { nearest = v; minDiff = d; }
-    }
-    console.log(
-      `[ContourMargin] width=${strokeSettings.width} not in ${detectedAlgorithm ?? 'complex'} ` +
-      `option list — snapping to nearest valid value ${nearest}`
-    );
-    setStrokeSettings((prev) => ({ ...prev, width: nearest }));
-  }, [detectedAlgorithm, strokeSettings.width]);
+  // Algorithm detection must not change the customer's selected margin.
 
   const handleApplyAndAdd = useCallback((newLabel: 'CutContour' | 'PerfCutContour' | 'KissCut') => {
     const workerManager = getContourWorkerManager();
