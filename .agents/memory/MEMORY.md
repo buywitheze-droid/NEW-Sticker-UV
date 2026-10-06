@@ -9,3 +9,4 @@
 - [QR repair integrity](qr-repair-integrity.md) — repairs preserve exact content and edit print pixels; scan timeouts are not proof that no code exists.
 - [Auto spot selections](auto-spot-selection-contract.md) — keep existing names and binary selections; same-RGB regions must retain separate White/Gloss membership.
 - [Custom spot names](custom-spot-names.md) — preserve literal PDF names, including hash escapes; arbitrary cut labels require explicit identity for re-import.
+- [Contour performance](contour-performance.md) — test full-resolution, wide-offset tracing; avoid disk stamping whose cost grows with radius squared.
