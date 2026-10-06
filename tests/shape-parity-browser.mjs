@@ -353,12 +353,18 @@ try {
 
   // Save an asymmetric, offset, scaled rounded rectangle, then verify the
   // gang-sheet item export retains its own cutline (not the sheet's bounds).
+  // Populate the contour worker cache first: the subsequent shape must not
+  // accidentally inherit this old outline when added to the sheet.
+  await page.getByRole("button", { name: "Contour", exact: true }).click();
+  await downloadPDF(page, standard, "prime old contour cache");
+  await page.getByRole("button", { name: "Shape", exact: true }).click();
   await page.getByRole("button", { name: "Rounded", exact: true }).click();
   const advanced = page.getByRole("button", { name: "Advanced", exact: true });
   if (!await page.getByText("Custom Cut Size", { exact: true }).isVisible()) await advanced.click();
   const custom = page.getByText("Custom Cut Size", { exact: true }).locator("xpath=..");
   await custom.locator('input[type="number"]').nth(0).fill("3.4");
   await custom.locator('input[type="number"]').nth(1).fill("2.2");
+  await page.getByRole("slider", { name: "Shape Margin", exact: true }).fill("-0.2");
   const size = await cutSize(page);
   await page.getByRole("button", { name: "Add to Gang Sheet", exact: true }).click();
   await page.getByRole("button", { name: /View Gangsheet/ }).click();

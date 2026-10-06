@@ -446,7 +446,8 @@ export default function ImageEditor({
     const workerManager = getContourWorkerManager();
     const cachedData = workerManager.getCachedContourData();
 
-    if (hasUserCutPath && cachedData && cachedData.pathPoints && cachedData.pathPoints.length >= 3) {
+    // Shape settings are authoritative, even while an older contour is cached.
+    if (!shapeSettings.enabled && hasUserCutPath && cachedData && cachedData.pathPoints && cachedData.pathPoints.length >= 3) {
       contourSnapshot = {
         pathPoints: [...cachedData.pathPoints],
         previewPathPoints: [...cachedData.previewPathPoints],

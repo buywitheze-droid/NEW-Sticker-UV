@@ -753,9 +753,8 @@ export async function downloadGangSheetPDF(
       : placement.y + (isRotated ? item.contourData.imageOffsetX : item.contourData.imageOffsetY);
     const imgYPts = heightPts - imageTop * 72 - drawImgHeightPts;
 
-    // Clip image to contour path for shapes (circle, oval, rounded shapes)
-    const needsClip = isShapeMode && item.shapeSettings
-      && ['circle', 'oval', 'rounded-square', 'rounded-rectangle'].includes(item.shapeSettings.type);
+    // Every preset can crop artwork (negative margins, custom size, or offsets).
+    const needsClip = isShapeMode && item.shapeSettings?.enabled;
 
     if (needsClip) {
       const { contourData } = item;

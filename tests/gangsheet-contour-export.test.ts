@@ -372,6 +372,41 @@ function clearCapturedDownloads(): void {
   downloadedFilenames.length = 0;
 }
 
+test("every nonzero margin and corner style preserves exact cut vertices on copied and rotated exports", async () => {
+  const canvas = makeNotchedArt();
+  for (const width of [0.02, 0.04, 0.07, 0.14, 0.25]) {
+    for (const cornerMode of ["sharp", "balanced", "rounded"] as const) {
+      const settings = { ...strokeSettings, width, cornerMode };
+      const contour = await contourFrom(canvas, settings);
+      const item = makeItem("margin-corners", canvas, contour, 2, { strokeSettings: settings });
+      const before = itemSnapshot(item);
+      const placements = [false, true].map((rotated, instanceIndex) => ({
+        itemId: item.id, instanceIndex, x: 0.5 + instanceIndex * 3, y: 0.5,
+        width: rotated ? contour.heightInches : contour.widthInches,
+        height: rotated ? contour.widthInches : contour.heightInches, rotated,
+      }));
+      for (const singleArtboard of [false, true]) {
+        const blob = await quiet(() => gangSheet.downloadGangSheetPDF([item],
+          { sheetWidth: 8, sheetHeight: 8, gap: 0.1, edgePadding: 0.1 },
+          placements, singleArtboard));
+        const pdf = await PDFDocument.load(await blob.arrayBuffer());
+        const ops = pageContent(pdf, pdf.getPage(0));
+        for (const placement of placements) {
+          for (const path of contour.allPathPoints?.length ? contour.allPathPoints : [contour.pathPoints]) {
+            const expected = path.map((p, i) => {
+              const x = placement.x + (placement.rotated ? contour.heightInches - p.y : p.x);
+              const y = 8 - placement.y - (placement.rotated ? contour.widthInches - p.x : contour.heightInches - p.y);
+              return `${(x * 72).toFixed(4)} ${(y * 72).toFixed(4)} ${i === 0 ? "m" : "l"}`;
+            }).join("\n");
+            assert.ok(ops.includes(expected), `${width}/${cornerMode}/rotated=${placement.rotated}: cut changed`);
+          }
+        }
+      }
+      assert.equal(itemSnapshot(item), before, "copy/export must not mutate the saved cut");
+    }
+  }
+});
+
 test("actual contour results pack and export one bounded gang-sheet page", async () => {
   const notchedCanvas = makeNotchedArt();
   const spotCanvas = makeSpotArt();

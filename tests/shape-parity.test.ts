@@ -145,7 +145,9 @@ for (const module of modules) {
 for (let m = 0; m < modules.length; m++) {
   test(`${m === 0 ? "active" : "builder"} gang PDF places scaled, offset shapes at both item rotations`, async () => {
     for (const type of shapes) {
-      const shape = settings(type);
+      for (const margin of [0.15, -0.2]) {
+      const shape = { ...settings(type), offset: margin,
+        ...(margin < 0 ? { shapeWidthOverride: 0, shapeHeightOverride: 0 } : {}) };
       const contour = modules[m].generateShapePathPointsInches(shape, resize);
       const item = {
         id: `shape-${type}`, imageElement: artwork, thumbnail: "", quantity: 1,
@@ -156,9 +158,11 @@ for (let m = 0; m < modules.length; m++) {
       const placement = { itemId: item.id, instanceIndex: 0, x: 3, y: 2,
         width: contour.widthInches, height: contour.heightInches };
       for (const rotated of [false, true]) {
+        for (const singleArtboard of [false, true]) {
+        const copies = [placement, { ...placement, instanceIndex: 1, x: 0.2, y: 0.2 }];
         const blob = await gangs[m].downloadGangSheetPDF([item],
           { sheetWidth: 8, sheetHeight: 8, gap: 0, edgePadding: 0 },
-          [{ ...placement, rotated }]);
+          copies.map(copy => ({ ...copy, rotated })), singleArtboard);
         const pdf = await PDFDocument.load(await blob.arrayBuffer());
         const ops = content(pdf);
         assert.match(ops, /\/My#20Cut CS 1 SCN/);
@@ -172,21 +176,31 @@ for (let m = 0; m < modules.length; m++) {
         // The PDF image CTM must agree with the contour's quarter-turn affine,
         // including an asymmetric image offset (not just the centered case).
         const imageMatrices = [...ops.matchAll(/([\d.-]+) 0 0 ([\d.-]+) ([\d.-]+) ([\d.-]+) cm\n\/Img_/g)];
-        if (!["square", "rectangle"].includes(type)) {
+        {
           assert.ok(imageMatrices.some(match =>
             Math.abs(Number(match[1]) - (rotated ? imageH : imageW) * 72) < 1e-6 &&
             Math.abs(Number(match[2]) - (rotated ? imageW : imageH) * 72) < 1e-6 &&
             Math.abs(Number(match[3]) - expectedX) < 1e-6 &&
             Math.abs(Number(match[4]) - expectedY) < 1e-6),
           `${type} rotated=${rotated}: image CTM does not match the cut geometry`);
-        } else {
-          assert.match(ops, /\bDo\b/);
+        }
+        assert.equal((ops.match(/W n/g) || []).length, 2, `${type}: each copy must clip artwork`);
+        assert.equal((ops.match(/\/My#20Cut CS 1 SCN/g) || []).length, 2, `${type}: each copy needs a cut path`);
+        for (const copy of copies) {
+          const expected = contour.pathPoints.map((p: { x: number; y: number }, i: number) => {
+            const x = copy.x + (rotated ? p.y : p.x);
+            const y = 8 - copy.y - (rotated ? contour.widthInches - p.x : p.y);
+            return `${(x * 72).toFixed(4)} ${(y * 72).toFixed(4)} ${i === 0 ? 'm' : 'l'}`;
+          }).join('\n');
+          assert.ok(ops.includes(expected), `${type} ${margin} rotated=${rotated}: copy cut vertices changed`);
         }
         if (m === 1) {
           const rect = gangs[m].getGangSheetImageRectInches(item, { ...placement, rotated });
           assert.ok(Math.abs(rect.x * 72 - expectedX) < 1e-6);
           assert.ok(Math.abs(rect.y - expectedTop) < 1e-6);
         }
+        }
+      }
       }
     }
   });
