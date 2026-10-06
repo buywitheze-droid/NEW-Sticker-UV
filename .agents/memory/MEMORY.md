@@ -11,3 +11,4 @@
 - [Custom spot names](custom-spot-names.md) — preserve literal PDF names, including hash escapes; arbitrary cut labels require explicit identity for re-import.
 - [Contour performance](contour-performance.md) — test full-resolution, wide-offset tracing; avoid disk stamping whose cost grows with radius squared.
 - [Corner styles](contour-corner-styles.md) — smoothing is independent of margin; explicit styles stay local until offload support is negotiated.
+- [Shape margins](shape-margin-behavior.md) — negative margins intentionally crop artwork; margin edits reset custom cut dimensions, not artwork scale.

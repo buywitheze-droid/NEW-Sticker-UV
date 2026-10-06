@@ -327,6 +327,30 @@ try {
     results.push({ preset, size });
   }
 
+  // Negative margins must shrink the shape, clear previous custom cut-size
+  // overrides, and produce the same visible and downloaded boundary.
+  for (const preset of presets) {
+    await page.getByRole("button", { name: preset, exact: true }).click();
+    const margin = page.getByRole("slider", { name: "Shape Margin", exact: true });
+    await margin.fill("0");
+    await page.waitForTimeout(200);
+    const zero = await cutSize(page);
+    await margin.fill("-0.2");
+    await page.waitForTimeout(350);
+    const smaller = await cutSize(page);
+    assert.ok(smaller.width < zero.width && smaller.height < zero.height, `${preset}: negative margin did not shrink`);
+    const preview = await previewOutline(page);
+    for (const button of [standard, single]) {
+      const pdf = await downloadPDF(page, button, `${preset} negative margin`);
+      await checkPage(pdf, smaller, preset);
+      assertPreviewMatchesPDF(preview, pdfCutPath(pdf, "KnifeLine"), smaller, preset);
+    }
+    await margin.fill("0.25");
+    await page.waitForTimeout(200);
+    const larger = await cutSize(page);
+    assert.ok(larger.width > zero.width && larger.height > zero.height);
+  }
+
   // Save an asymmetric, offset, scaled rounded rectangle, then verify the
   // gang-sheet item export retains its own cutline (not the sheet's bounds).
   await page.getByRole("button", { name: "Rounded", exact: true }).click();

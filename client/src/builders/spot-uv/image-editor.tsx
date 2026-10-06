@@ -9,7 +9,7 @@ import { createVectorStroke, downloadVectorStroke, createVectorPaths, type Vecto
 import { checkCadCutBounds, type CadCutBounds } from "./lib/cadcut-bounds";
 import { downloadContourPDF, downloadDesignOnlyPDF, type CachedContourData, type SpotColorInput } from "./lib/contour-outline";
 import { getContourWorkerManager, processContourInWorker, type DetectedAlgorithm, type DetectedShapeInfo } from "./lib/contour-worker-manager";
-import { downloadShapePDF, calculateShapeDimensions, resolveShapeDimensions, traceShapeCanvasPath, generateShapePathPointsInches } from "./lib/shape-outline";
+import { downloadShapePDF, calculateShapeDimensions, getMinimumShapeOffset, resolveShapeDimensions, traceShapeCanvasPath, generateShapePathPointsInches } from "./lib/shape-outline";
 import GangSheetPanel from "./gang-sheet-panel";
 import type { GangSheetItem, GangSheetSettings } from "./lib/gang-sheet";
 import { DEFAULT_GANG_SHEET_SETTINGS, clampGangSheetQuantity, expandSettingsToFit, packGangSheet, maxQuantityForItem } from "./lib/gang-sheet";
@@ -1679,7 +1679,14 @@ export default function ImageEditor({
   }, []);
 
   const handleShapeChange = useCallback((newSettings: Partial<ShapeSettings>) => {
+    if (newSettings.offset !== undefined && !Number.isFinite(newSettings.offset)) return;
     let updated = { ...shapeSettings, ...newSettings };
+    updated.offset = Math.max(getMinimumShapeOffset(resizeSettings.widthInches, resizeSettings.heightInches, updated.type), Math.min(2, updated.offset));
+    // Margin controls the cut shape, not artwork scale. Overrides would hide it.
+    if (newSettings.offset !== undefined) {
+      updated.shapeWidthOverride = 0;
+      updated.shapeHeightOverride = 0;
+    }
     
     // If enabling shape, disable stroke for mutual exclusion
     if (newSettings.enabled === true) {

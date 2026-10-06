@@ -9,7 +9,7 @@ import { StrokeSettings, ResizeSettings, ImageInfo, ShapeSettings, StickerSize, 
 import { STICKER_SIZES } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { generateContourPDFBase64 } from "@/lib/contour-outline";
-import { generateShapePDFBase64, calculateShapeDimensions } from "@/lib/shape-outline";
+import { generateShapePDFBase64, calculateShapeDimensions, getMinimumShapeOffset } from "@/lib/shape-outline";
 import { getContourWorkerManager, type DetectedAlgorithm } from "@/lib/contour-worker-manager";
 import { extractColorsFromImage, detectColorRegionsAsync, ExtractedColor, type ColorExtractionResult } from "@/lib/color-extractor";
 import { Download, ChevronDown, ChevronUp, Eye, EyeOff, Pencil, Check, X, Layers, Palette, Pipette, Trash2, Link, Unlink, Settings2, Spline, Shapes } from "lucide-react";
@@ -174,6 +174,12 @@ export default function ControlsSection({
   const colorListRef = useRef<HTMLDivElement>(null);
 
   const canDownload = !!imageInfo;
+  const minimumShapeOffset = getMinimumShapeOffset(resizeSettings.widthInches, resizeSettings.heightInches, shapeSettings.type);
+  const [shapeMarginDraft, setShapeMarginDraft] = useState(String(shapeSettings.offset));
+  const shapeMarginFocused = useRef(false);
+  useEffect(() => {
+    if (!shapeMarginFocused.current) setShapeMarginDraft(String(shapeSettings.offset));
+  }, [shapeSettings.offset]);
   const extractionRef = useRef<ColorExtractionResult | null>(null);
 
   const commitSpotName = useCallback((kind: "white" | "gloss", value: string) => {
@@ -906,16 +912,22 @@ export default function ControlsSection({
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <Label className="text-xs text-gray-600 font-medium">Margin</Label>
-                        <span className="text-[10px] text-emerald-600 font-mono bg-emerald-50 px-1.5 py-0.5 rounded">{shapeSettings.offset.toFixed(3)}"</span>
+                        <span className="text-[10px] text-emerald-600 font-mono bg-emerald-50 px-1.5 py-0.5 rounded">{shapeSettings.offset}"</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <input
-                          type="number" min="0" max="2" step="0.0125"
-                          value={shapeSettings.offset}
+                          type="number" min={minimumShapeOffset} max="2" step="any"
+                          aria-label="Shape Margin inches"
+                          aria-describedby="shape-margin-help"
+                          value={shapeMarginDraft}
                           onChange={(e) => {
+                            setShapeMarginDraft(e.target.value);
                             const v = parseFloat(e.target.value);
-                            if (!isNaN(v) && v >= 0) onShapeChange({ offset: Math.min(2, v) });
+                            if (Number.isFinite(v) && v >= minimumShapeOffset && v <= 2) onShapeChange({ offset: v });
                           }}
+                          onFocus={() => { shapeMarginFocused.current = true; }}
+                          onBlur={() => { shapeMarginFocused.current = false; setShapeMarginDraft(String(shapeSettings.offset)); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                           className="w-16 h-7 text-xs text-center border border-gray-300 rounded-lg px-1 bg-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400"
                         />
                         <div className="flex gap-1 flex-1">
@@ -934,6 +946,23 @@ export default function ControlsSection({
                           ))}
                         </div>
                       </div>
+                      <input
+                        type="range" min={minimumShapeOffset} max="2" step="0.01"
+                        aria-label="Shape Margin"
+                        aria-describedby="shape-margin-help"
+                        aria-valuetext={`${shapeSettings.offset} inches${shapeSettings.offset === 0 ? ', neutral' : shapeSettings.offset < 0 ? ', trims artwork' : ', adds space'}`}
+                        value={shapeSettings.offset}
+                        onChange={(e) => onShapeChange({ offset: Number(e.target.value) })}
+                        className="mt-2 w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                      />
+                      <div className="relative h-4 mt-1 text-[10px] text-gray-500" aria-hidden="true">
+                        <span className="absolute left-0">Trim</span>
+                        <span className="absolute -translate-x-1/2 border-t border-gray-300" style={{ left: `${(-minimumShapeOffset / (2 - minimumShapeOffset)) * 100}%` }}>0</span>
+                        <span className="absolute right-0">Add space</span>
+                      </div>
+                      <p id="shape-margin-help" className="mt-1 text-[11px] leading-snug text-gray-500">
+                        Negative margin trims into artwork; positive adds space. Zero is neutral. Changing margin resets Custom Cut Size, not artwork sizing.
+                      </p>
                     </div>
 
                     {/* Fill Color */}

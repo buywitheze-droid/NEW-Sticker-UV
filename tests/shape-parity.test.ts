@@ -75,6 +75,22 @@ function content(pdf: PDFDocument) {
 }
 
 for (const module of modules) {
+  test('negative shape margins shrink cut dimensions safely and survive PDF export', async () => {
+    for (const type of shapes) {
+      const shape = { ...settings(type), rotation: 0, offset: -0.15,
+        shapeWidthOverride: 0, shapeHeightOverride: 0 };
+      const zero = module.calculateShapeDimensions(resize.widthInches, resize.heightInches, type, 0);
+      const dims = module.resolveShapeDimensions(shape, resize);
+      assert.ok(dims.widthInches < zero.widthInches && dims.heightInches < zero.heightInches);
+      const minimum = module.getMinimumShapeOffset(resize.widthInches, resize.heightInches, type);
+      const smallest = module.calculateShapeDimensions(resize.widthInches, resize.heightInches, type, minimum - 10);
+      assert.ok(smallest.widthInches >= 0.049 && smallest.heightInches >= 0.049);
+      const data = await module.generateShapePDFBase64(artwork, shape, resize);
+      const pdf = await PDFDocument.load(Buffer.from(data, 'base64'));
+      assert.ok(Math.abs(pdf.getPage(0).getWidth() / 72 - dims.widthInches - 0.2) < 1e-6);
+      assert.ok(Math.abs(pdf.getPage(0).getHeight() / 72 - dims.heightInches - 0.2) < 1e-6);
+    }
+  });
   for (const type of shapes) {
     test(`${module === modules[0] ? "active" : "builder"} ${type}: resolved cut geometry, raster, PDF and base64 agree`, async () => {
       const shape = settings(type);

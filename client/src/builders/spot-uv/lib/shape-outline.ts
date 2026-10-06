@@ -161,13 +161,20 @@ function getRoundedRectPath(x: number, y: number, width: number, height: number,
   return path;
 }
 
+/** Keep at least 0.05" of cut size; round toward zero for a safe slider stop. */
+export function getMinimumShapeOffset(width: number, height: number, type: ShapeSettings['type']): number {
+  const base = ['circle', 'square', 'rounded-square'].includes(type) ? Math.max(width, height) : Math.min(width, height);
+  return Math.min(0, Math.ceil((0.05 - base) / 2 * 100) / 100);
+}
+
 export function calculateShapeDimensions(
   designWidthInches: number,
   designHeightInches: number,
   shapeType: ShapeSettings['type'],
   offset: number
 ): { widthInches: number; heightInches: number } {
-  const totalOffset = offset * 2;
+  const safeOffset = Math.max(getMinimumShapeOffset(designWidthInches, designHeightInches, shapeType), Number.isFinite(offset) ? offset : 0);
+  const totalOffset = safeOffset * 2;
 
   if (shapeType === 'circle') {
     const diameter = Math.max(designWidthInches, designHeightInches) + totalOffset;
