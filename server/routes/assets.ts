@@ -12,14 +12,22 @@ const ALLOWED_MIME: Record<string, AssetKind> = {
   "image/png": "source_image",
   "image/jpeg": "source_image",
   "application/pdf": "source_pdf",
+  "application/postscript": "source_overlay",
+  "application/eps": "source_overlay",
+  "application/x-eps": "source_overlay",
+  "image/svg+xml": "source_overlay",
 };
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_UPLOAD_BYTES },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype in ALLOWED_MIME) cb(null, true);
-    else cb(new Error("Only PNG, JPEG, or PDF files are allowed"));
+    const name = (file.originalname || "").toLowerCase();
+    if (file.mimetype in ALLOWED_MIME || name.endsWith(".eps") || name.endsWith(".svg") || name.endsWith(".pdf")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only PNG, JPEG, PDF, EPS, or SVG files are allowed"));
+    }
   },
 });
 
@@ -27,6 +35,14 @@ function extForMime(mime: string): string {
   if (mime === "application/pdf") return "pdf";
   if (mime === "image/jpeg") return "jpg";
   return "png";
+}
+
+function extForUpload(mime: string, filename?: string): string {
+  const name = (filename || "").toLowerCase();
+  if (name.endsWith(".eps")) return "eps";
+  if (name.endsWith(".svg")) return "svg";
+  if (name.endsWith(".pdf") || mime === "application/pdf") return "pdf";
+  return extForMime(mime);
 }
 
 export function registerAssetRoutes(app: Express): void {
@@ -39,10 +55,14 @@ export function registerAssetRoutes(app: Express): void {
 
       // `kind` lets the caller mark a PNG upload as a thumbnail (mime alone can't distinguish them).
       const requestedKind = typeof req.body.kind === "string" ? req.body.kind : undefined;
+      const name = (req.file.originalname || "").toLowerCase();
       const kind: AssetKind =
-        requestedKind === "thumbnail" ? "thumbnail" : ALLOWED_MIME[req.file.mimetype];
+        requestedKind === "thumbnail" ? "thumbnail"
+        : requestedKind === "source_overlay" ? "source_overlay"
+        : ALLOWED_MIME[req.file.mimetype]
+        ?? (name.endsWith(".eps") || name.endsWith(".svg") ? "source_overlay" : "source_image");
 
-      const key = `${userId}/${kind}/${nanoid()}.${extForMime(req.file.mimetype)}`;
+      const key = `${userId}/${kind}/${nanoid()}.${extForUpload(req.file.mimetype, req.file.originalname)}`;
       await putObject(key, req.file.buffer, req.file.mimetype);
 
       const width = req.body.width ? parseInt(req.body.width, 10) : undefined;

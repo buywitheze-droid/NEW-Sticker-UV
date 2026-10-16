@@ -64,7 +64,7 @@ export const sessions = pgTable("sessions", {
 ]);
 
 // ─── Assets — pointer + metadata row; bytes live in Cloudflare R2 (server/lib/object-storage.ts) ───
-export const assetKinds = ["source_image", "source_pdf", "thumbnail", "gang_sheet_pdf"] as const;
+export const assetKinds = ["source_image", "source_pdf", "source_overlay", "thumbnail", "gang_sheet_pdf"] as const;
 export type AssetKind = (typeof assetKinds)[number];
 
 export const assets = pgTable("assets", {

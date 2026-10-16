@@ -1,4 +1,5 @@
 import type { PDFCutContourInfo } from './pdf-parser';
+import type { ImportedVectorOverlay } from './imported-overlay';
 
 export interface ImageInfo {
   file: File;
@@ -59,6 +60,7 @@ export interface ImageInfo {
    * a blurry / low-DPI source QR can opt in for crisp prints.
    */
   qrRerenderEnabled?: boolean;
+  importedOverlays?: ImportedVectorOverlay[];
 }
 
 export type ContourMode = 'smooth' | 'scattered';

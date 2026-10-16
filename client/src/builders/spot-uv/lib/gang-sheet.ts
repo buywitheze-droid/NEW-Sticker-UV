@@ -12,6 +12,7 @@ import { addGangSheetSpotColorsToPDF, type SpotPixelMapData } from './spot-color
 import { runArrange } from '@/lib/arrange-core';
 import { planLadderJump } from '@/lib/sheet-fit';
 import { cutContourMetadata, pdfName } from '@/lib/pdf-name';
+import { appendOverlayOps, overlayPathsToPDFOps, registerOverlaySeparation, remapOverlayPathsByPoint } from './overlay-export';
 
 const MAX_CANVAS_DIM = 16384;
 const MAX_CANVAS_PIXELS = 268_435_456; // ~16384²; Chrome's hard limit
@@ -27,6 +28,9 @@ function validateGangSheetSpotNameCollisions(items: GangSheetItem[]): void {
     const gloss = item.spotColors?.find(color => color.spotGloss);
     if (white) names.add(white.spotWhiteName || item.spotWhiteName || 'RDG_WHITE');
     if (gloss) names.add(gloss.spotGlossName || item.spotGlossName || 'RDG_GLOSS');
+    for (const overlay of item.importedOverlays ?? []) {
+      if (overlay.role === "spotWhite" || overlay.role === "spotGloss") names.add(overlay.label);
+    }
     return names;
   });
   for (let index = 0; index < items.length; index++) {
@@ -98,6 +102,15 @@ export interface GangSheetItem {
   spotGlossName?: string;
   /** Pixel-exact selection map (matches the on-canvas overlay) for spot color tracing. */
   spotPixelMap?: SpotPixelMapData;
+  /**
+   * Already-aligned overlay paths in item-local page inches (Y-down).
+   * Export remaps these; it must not mutate the snapshot.
+   */
+  importedOverlays?: Array<{
+    role: "cutline" | "spotWhite" | "spotGloss";
+    label: string;
+    paths: import("./imported-overlay").OverlayPath[];
+  }>;
 }
 
 export interface GangSheetSettings {
@@ -791,7 +804,12 @@ export async function downloadGangSheetPDF(
   // --- Spot color cut paths (per-label) ---
 
   const usedLabels = new Set<string>();
-  for (const item of items) usedLabels.add(item.cutContourLabel);
+  for (const item of items) {
+    usedLabels.add(item.cutContourLabel);
+    for (const overlay of item.importedOverlays ?? []) {
+      if (overlay.role === "cutline") usedLabels.add(overlay.label || item.cutContourLabel);
+    }
+  }
   const contourLabels = Array.from(usedLabels);
   pdfDoc.setSubject(`${options.singleDesign ? 'Individual saved design' : 'Gang sheet'} with contour paths ${cutContourMetadata(contourLabels)}`);
   pdfDoc.setKeywords([...contourLabels, 'spot color', 'cutting', 'vector']);
@@ -834,6 +852,24 @@ export async function downloadGangSheetPDF(
     // and any spot color separations are still drawn elsewhere; we just
     // don't add a magenta CutContour line for these items.
     if (item.noCutPath) continue;
+    const importedCuts = item.importedOverlays?.filter((overlay) => overlay.role === "cutline") ?? [];
+    if (importedCuts.length > 0) {
+      for (const importedCut of importedCuts) {
+        const remapped = remapOverlayPathsByPoint(importedCut.paths, (x, y) =>
+          mapContourPointToSheetTopLeft(
+            { x, y },
+            item.contourData.widthInches,
+            item.contourData.heightInches,
+            placement.x,
+            placement.y,
+            !!placement.rotated,
+            !!item.shapeSettings?.enabled,
+          )
+        );
+        allPathOps += overlayPathsToPDFOps(remapped, sheetHeight, importedCut.label || item.cutContourLabel, "stroke");
+      }
+      continue;
+    }
     const { contourData } = item;
     const label = item.cutContourLabel;
     const isShapeCut = !!item.shapeSettings?.enabled;
@@ -959,6 +995,42 @@ export async function downloadGangSheetPDF(
       // A PDF missing requested production plates is not a successful export.
       // Let the panel display the error before any download/save is attempted.
       throw new Error('Could not generate the gang sheet spot-color layers. Please try again.', { cause: err });
+    }
+  }
+
+  const importedSpotNames = new Map<string, Array<{ item: GangSheetItem; role: "spotWhite" | "spotGloss"; paths: import("./imported-overlay").OverlayPath[] }>>();
+  for (const item of items) {
+    for (const overlay of item.importedOverlays ?? []) {
+      if (overlay.role !== "spotWhite" && overlay.role !== "spotGloss") continue;
+      const list = importedSpotNames.get(overlay.label) ?? [];
+      list.push({ item, role: overlay.role, paths: overlay.paths });
+      importedSpotNames.set(overlay.label, list);
+    }
+  }
+  if (importedSpotNames.size > 0) {
+    for (const [label, entries] of importedSpotNames) {
+      let ops = "";
+      for (const placement of placements) {
+        const matches = entries.filter((entry) => entry.item.id === placement.itemId);
+        for (const entry of matches) {
+          const remapped = remapOverlayPathsByPoint(entry.paths, (x, y) =>
+            mapContourPointToSheetTopLeft(
+              { x, y },
+              entry.item.contourData.widthInches,
+              entry.item.contourData.heightInches,
+              placement.x,
+              placement.y,
+              !!placement.rotated,
+              !!entry.item.shapeSettings?.enabled,
+            )
+          );
+          ops += overlayPathsToPDFOps(remapped, sheetHeight, label, "fill");
+        }
+      }
+      if (!ops) continue;
+      const target = singleArtboard ? page : pdfDoc.addPage([widthPts, heightPts]);
+      registerOverlaySeparation(pdfDoc, target, label);
+      appendOverlayOps(pdfDoc, target, ops);
     }
   }
 

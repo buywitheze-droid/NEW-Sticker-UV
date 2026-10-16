@@ -4,7 +4,7 @@ import PreviewSection from "./preview-section";
 import ControlsSection, { SpotPreviewData } from "./controls-section";
 import type { ExtractedColor } from "./lib/color-extractor";
 import { calculateImageDimensions, downloadCanvas } from "./lib/image-utils";
-import { cropCanvasToContent, cropImageToContent } from "./lib/image-crop";
+import { cropCanvasToContent, cropImageToContent, getImageBounds } from "./lib/image-crop";
 import { createVectorStroke, downloadVectorStroke, createVectorPaths, type VectorFormat } from "./lib/vector-stroke";
 import { checkCadCutBounds, type CadCutBounds } from "./lib/cadcut-bounds";
 import { downloadContourPDF, downloadDesignOnlyPDF, type CachedContourData, type SpotColorInput } from "./lib/contour-outline";
@@ -46,6 +46,12 @@ import {
   eraseConnectedColorOnCanvas,
   resolveSpotUvPrintImage,
 } from "./lib/print-preview";
+import type { ImportedVectorOverlay, OverlayRole } from "./lib/imported-overlay";
+import { overlayById, overlayByRole, overlayToDocument, replaceOverlay } from "./lib/imported-overlay";
+import { applyOverlayUserNudge, computeOverlayAutoFit, createImportedOverlay, refitUnlockedOverlays, resetOverlayAlignment } from "./lib/overlay-align";
+import { customCutOverlay, customCutOverlays, customSpotOverlays, filterTracedSpotColors, overlayToContourSnapshot, snapshotOverlayForGang } from "./lib/overlay-export";
+import { downloadImportedOverlayPDF } from "./lib/overlay-download";
+import { OverlayParseError, parseOverlayFile } from "./lib/overlay-parser";
 
 export type { ImageInfo, StrokeSettings, StrokeMode, ResizeSettings, ShapeSettings, StickerSize, LockedContour, SegmentLayer, SegmentationData } from "./lib/types";
 import { STICKER_SIZES, type ImageInfo, type StrokeSettings, type StrokeMode, type ResizeSettings, type ShapeSettings, type StickerSize, type LockedContour, type SegmentLayer, type SegmentationData } from "./lib/types";
@@ -67,6 +73,55 @@ function fitUploadedDimensions(widthInches: number, heightInches: number) {
 function fittingStickerSize(widthInches: number, heightInches: number): StickerSize {
   const longestEdge = Math.max(widthInches, heightInches);
   return STICKER_SIZES.find(({ value }) => value >= longestEdge)?.value ?? 24;
+}
+
+function sourcePageFromImage(imageInfo?: ImageInfo | null): { widthInches: number; heightInches: number } | undefined {
+  if (!imageInfo) return undefined;
+  const dpi = imageInfo.dpi || 300;
+  const widthPx = imageInfo.exportPixelWidth || imageInfo.originalWidth;
+  const heightPx = imageInfo.exportPixelHeight || imageInfo.originalHeight;
+  if (!(dpi > 0) || !(widthPx > 0) || !(heightPx > 0)) return undefined;
+  return { widthInches: widthPx / dpi, heightInches: heightPx / dpi };
+}
+
+function printBoundsFromResize(
+  resize: ResizeSettings,
+  imageInfo?: ImageInfo | null,
+): { widthInches: number; heightInches: number; ink?: { x: number; y: number; width: number; height: number }; sourcePage?: { widthInches: number; heightInches: number } } {
+  const sourcePage = sourcePageFromImage(imageInfo);
+  const vectorInk = imageInfo?.vectorInkBox;
+  if (vectorInk) {
+    return {
+      widthInches: resize.widthInches,
+      heightInches: resize.heightInches,
+      sourcePage,
+      ink: {
+        x: vectorInk.x * resize.widthInches,
+        y: vectorInk.y * resize.heightInches,
+        width: vectorInk.w * resize.widthInches,
+        height: vectorInk.h * resize.heightInches,
+      },
+    };
+  }
+  if (imageInfo?.image) {
+    const bounds = getImageBounds(imageInfo.image);
+    const srcW = imageInfo.image.naturalWidth || imageInfo.image.width;
+    const srcH = imageInfo.image.naturalHeight || imageInfo.image.height;
+    if (srcW > 0 && srcH > 0 && bounds.width > 0 && bounds.height > 0) {
+      return {
+        widthInches: resize.widthInches,
+        heightInches: resize.heightInches,
+        sourcePage,
+        ink: {
+          x: (bounds.x / srcW) * resize.widthInches,
+          y: (bounds.y / srcH) * resize.heightInches,
+          width: (bounds.width / srcW) * resize.widthInches,
+          height: (bounds.height / srcH) * resize.heightInches,
+        },
+      };
+    }
+  }
+  return { widthInches: resize.widthInches, heightInches: resize.heightInches, sourcePage };
 }
 
 export default function ImageEditor({
@@ -409,13 +464,139 @@ export default function ImageEditor({
     workerManager.clearCache();
   }, []);
 
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+
+  const updateImportedOverlays = useCallback((updater: (overlays: ImportedVectorOverlay[]) => ImportedVectorOverlay[]) => {
+    setImageInfo((current) => {
+      if (!current) return current;
+      return { ...current, importedOverlays: updater(current.importedOverlays ?? []) };
+    });
+  }, []);
+
+  const handleOverlayUpload = useCallback(async (file: File, role: OverlayRole, replaceId?: string | null) => {
+    if (!imageInfo) {
+      toast({ title: "Upload a print first", description: "Cutline and spot files attach to the current design.", variant: "destructive" });
+      return;
+    }
+    try {
+      const parsed = await parseOverlayFile(file);
+      const print = printBoundsFromResize(resizeSettings, imageInfo);
+      let assetId: number | undefined;
+      if (isAuthenticated) {
+        try {
+          const uploaded = await uploadAsset(file, file.name, "source_overlay");
+          assetId = uploaded.id;
+        } catch (error) {
+          console.warn("[overlay] asset upload failed (will retry on save):", error);
+        }
+      }
+      const overlay = createImportedOverlay(role, parsed, print, parsed.detectedLabel ?? undefined, {
+        assetId,
+        sourceFile: file,
+        siblings: (imageInfo.importedOverlays ?? []).filter((item) => item.id !== replaceId),
+      });
+      if (role === "cutline") {
+        setStrokeSettings((prev) => ({ ...prev, enabled: false }));
+        setShapeSettings((prev) => ({ ...prev, enabled: false }));
+        setLockedContour(null);
+        if (parsed.detectedLabel) commitCutContourLabel(parsed.detectedLabel);
+      } else if (role === "spotWhite") {
+        setSpotPreviewData((prev) => ({ ...prev, enabled: true, spotWhiteName: overlay.label }));
+      } else {
+        setSpotPreviewData((prev) => ({ ...prev, enabled: true, spotGlossName: overlay.label }));
+      }
+      updateImportedOverlays((overlays) => {
+        const next = replaceOverlay(overlays, overlay, replaceId);
+        if (role !== "cutline") return next;
+        return next.map((item) => {
+          if (item.role === "cutline" || item.alignment.locked) return item;
+          const autoFit = computeOverlayAutoFit(item.nativePage, item.paths, print, {
+            role: item.role,
+            siblings: [overlay],
+          });
+          return {
+            ...item,
+            autoFit,
+            alignment: resetOverlayAlignment(item.alignment),
+            warnings: [...autoFit.warnings],
+          };
+        });
+      });
+      setSelectedOverlayId(replaceId || overlay.id);
+      toast({
+        title: role === "cutline"
+          ? (replaceId ? "Cutline replaced" : customCutOverlay(imageInfo.importedOverlays) ? "Cutline added" : "Cutline uploaded")
+          : role === "spotWhite" ? "White layer uploaded" : "Gloss layer uploaded",
+        description: [file.name, ...overlay.warnings].filter(Boolean).join(" — ") || overlay.label,
+      });
+    } catch (error) {
+      const message = error instanceof OverlayParseError || error instanceof Error
+        ? error.message
+        : "Could not read that vector file.";
+      toast({ title: "Upload failed", description: message, variant: "destructive" });
+    }
+  }, [imageInfo, resizeSettings, isAuthenticated, toast, updateImportedOverlays, commitCutContourLabel]);
+
+  const handleOverlayRemove = useCallback((id: string) => {
+    updateImportedOverlays((overlays) => overlays.filter((overlay) => overlay.id !== id));
+    setSelectedOverlayId((current) => current === id ? null : current);
+  }, [updateImportedOverlays]);
+
+  const handleOverlayChange = useCallback((id: string, patch: Partial<ImportedVectorOverlay>) => {
+    updateImportedOverlays((overlays) => overlays.map((overlay) => (
+      overlay.id === id ? { ...overlay, ...patch } : overlay
+    )));
+  }, [updateImportedOverlays]);
+
+  const handleOverlayAlignmentChange = useCallback((id: string, patch: Partial<ImportedVectorOverlay["alignment"]>) => {
+    updateImportedOverlays((overlays) => overlays.map((overlay) => (
+      overlay.id === id ? { ...overlay, alignment: { ...overlay.alignment, ...patch } } : overlay
+    )));
+  }, [updateImportedOverlays]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedOverlayId || !imageInfo) return;
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      const overlay = overlayById(imageInfo.importedOverlays, selectedOverlayId);
+      if (!overlay || overlay.alignment.locked) return;
+      e.preventDefault();
+      const step = e.shiftKey ? 0.001 : e.altKey ? 0.05 : 0.01;
+      const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+      const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+      handleOverlayAlignmentChange(overlay.id, applyOverlayUserNudge(overlay, printBoundsFromResize(resizeSettings, imageInfo), dx, dy));
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedOverlayId, imageInfo, resizeSettings, handleOverlayAlignmentChange]);
+
+  const handleOverlayAlignmentReset = useCallback((id: string) => {
+    updateImportedOverlays((overlays) => overlays.map((overlay) => {
+      if (overlay.id !== id) return overlay;
+      const print = printBoundsFromResize(resizeSettings, imageInfo);
+      const autoFit = computeOverlayAutoFit(overlay.nativePage, overlay.paths, print, {
+        role: overlay.role,
+        siblings: (imageInfo?.importedOverlays ?? []).filter((item) => item.id !== id),
+      });
+      return {
+        ...overlay,
+        autoFit,
+        alignment: resetOverlayAlignment(overlay.alignment),
+        warnings: [...autoFit.warnings],
+      };
+    }));
+  }, [updateImportedOverlays, resizeSettings, imageInfo]);
+
   const handleAddToGangSheet = useCallback(async () => {
     if (!imageInfo) {
       toast({ title: "No design loaded", description: "Upload a design first.", variant: "destructive" });
       return;
     }
 
-    if (!shapeSettings.enabled) {
+    const customCut = customCutOverlay(imageInfo.importedOverlays);
+    if (!shapeSettings.enabled && !customCut) {
       try {
         await processContourInWorker(
           imageInfo.image,
@@ -439,7 +620,8 @@ export default function ImageEditor({
     const hasUserCutPath =
       strokeSettings.enabled ||
       shapeSettings.enabled ||
-      !!(imageInfo?.isPDF && imageInfo?.pdfCutContourInfo?.hasCutContour);
+      !!customCut ||
+      !!(imageInfo?.isPDF && imageInfo?.pdfCutContourInfo?.hasCutContour && !customCut);
 
     let contourSnapshot: CachedContourData | null = null;
 
@@ -447,7 +629,13 @@ export default function ImageEditor({
     const cachedData = workerManager.getCachedContourData();
 
     // Shape settings are authoritative, even while an older contour is cached.
-    if (!shapeSettings.enabled && hasUserCutPath && cachedData && cachedData.pathPoints && cachedData.pathPoints.length >= 3) {
+    if (customCut) {
+      contourSnapshot = overlayToContourSnapshot(
+        customCutOverlays(imageInfo.importedOverlays),
+        printBoundsFromResize(resizeSettings, imageInfo),
+        strokeSettings.backgroundColor || "transparent",
+      );
+    } else if (!shapeSettings.enabled && hasUserCutPath && cachedData && cachedData.pathPoints && cachedData.pathPoints.length >= 3) {
       contourSnapshot = {
         pathPoints: [...cachedData.pathPoints],
         previewPathPoints: [...cachedData.previewPathPoints],
@@ -542,6 +730,10 @@ export default function ImageEditor({
       ? { pixelMap: new Int16Array(spotPreviewData.pixelMap), mapWidth: spotPreviewData.mapWidth, mapHeight: spotPreviewData.mapHeight }
       : undefined;
 
+    const print = printBoundsFromResize(resizeSettings, imageInfo);
+    const overlaySnapshots = (imageInfo.importedOverlays ?? []).filter((overlay) => overlay.visible).map((overlay) =>
+      snapshotOverlayForGang(overlay, print, contourSnapshot.imageOffsetX, contourSnapshot.imageOffsetY)
+    );
     const newItem: GangSheetItem = {
       id: crypto.randomUUID(),
       thumbnail,
@@ -550,13 +742,14 @@ export default function ImageEditor({
       resizeSettings: { ...resizeSettings },
       strokeSettings: { ...strokeSettings },
       shapeSettings: shapeSettings.enabled ? { ...shapeSettings } : undefined,
-      cutContourLabel,
+      cutContourLabel: overlayByRole(imageInfo.importedOverlays, "cutline")?.label || cutContourLabel,
       noCutPath: isNoCutPath,
       quantity: 1,
       qrCodes: imageInfo.qrCodes,
       qrRerenderEnabled: imageInfo.qrRerenderEnabled,
-      spotColors: spotColorsSnapshot,
+      spotColors: filterTracedSpotColors(spotColorsSnapshot, imageInfo.importedOverlays),
       spotPixelMap: spotPixelMapSnapshot,
+      importedOverlays: overlaySnapshots.length ? overlaySnapshots : undefined,
     };
 
     const nextItems = [...gangSheetItems, newItem];
@@ -1170,11 +1363,15 @@ export default function ImageEditor({
 
       console.log(`[BackgroundRemoval] Complete! Original: ${imageInfo.originalWidth}x${imageInfo.originalHeight}, New: ${next.originalWidth}x${next.originalHeight}`);
 
-      setImageInfo(next);
+      const print = printBoundsFromResize(resizeSettings, next);
+      const refit = refitUnlockedOverlays(next.importedOverlays ?? [], print);
+      setImageInfo({ ...next, importedOverlays: refit.overlays });
       refreshDerivedShapeState(next.image);
       toast({
         title: "Background Removed",
-        description: "White background removed from edges. Select Contour to see the new outline.",
+        description: refit.resetCount
+          ? "White background removed. Uploaded vector alignment was reset to auto-fit."
+          : "White background removed from edges. Select Contour to see the new outline.",
       });
     } catch (error) {
       console.error('Error removing background:', error);
@@ -1213,12 +1410,16 @@ export default function ImageEditor({
 
       console.log(`[MagicWand] Erased region around (${imageX.toFixed(0)}, ${imageY.toFixed(0)}) tol=${magicWandTolerance.toFixed(3)}; size: ${imageInfo.originalWidth}x${imageInfo.originalHeight} → ${next.originalWidth}x${next.originalHeight}`);
 
-      setImageInfo(next);
+      const print = printBoundsFromResize(resizeSettings, next);
+      const refit = refitUnlockedOverlays(next.importedOverlays ?? [], print);
+      setImageInfo({ ...next, importedOverlays: refit.overlays });
       refreshDerivedShapeState(next.image);
 
       toast({
         title: "Color Erased",
-        description: "Click another area to erase more, or click Done.",
+        description: refit.resetCount
+          ? "Uploaded vector alignment was reset to auto-fit."
+          : "Click another area to erase more, or click Done.",
       });
     } catch (error) {
       if ((error as Error).message?.includes('Cancelled')) return;
@@ -1424,6 +1625,29 @@ export default function ImageEditor({
         spotGlossName: s.spotColors.spotGlossName,
       });
       pendingSpotTagsRef.current = s.spotColors.tags;
+      if ("importedOverlays" in s && s.importedOverlays?.length) {
+        const print = printBoundsFromResize(s.resizeSettings, null);
+        const restored: ImportedVectorOverlay[] = [];
+        for (const doc of s.importedOverlays) {
+          if (doc.paths?.length) {
+            restored.push({ ...doc, warnings: doc.warnings ?? [] });
+          } else if (doc.source.assetId) {
+            try {
+              const file = await fetchAssetAsFile(doc.source.assetId, doc.source.filename, "application/octet-stream");
+              const parsed = await parseOverlayFile(file);
+              restored.push({
+                ...createImportedOverlay(doc.role, parsed, print, doc.label, { assetId: doc.source.assetId, sourceFile: file }),
+                alignment: doc.alignment,
+                autoFit: doc.autoFit,
+                visible: doc.visible,
+              });
+            } catch (error) {
+              console.warn("[reopen] overlay re-parse failed:", error);
+            }
+          }
+        }
+        setImageInfo((current) => current ? { ...current, importedOverlays: restored } : current);
+      }
       setCurrentDesignId(design.id);
       setCurrentDesignName(design.name);
       setSourceAssetId(src.assetId);
@@ -1474,6 +1698,29 @@ export default function ImageEditor({
         spotGlossName: s.spotColors.spotGlossName,
       });
       pendingSpotTagsRef.current = s.spotColors.tags;
+      if ("importedOverlays" in s && s.importedOverlays?.length) {
+        const print = printBoundsFromResize(s.resizeSettings, null);
+        const restored: ImportedVectorOverlay[] = [];
+        for (const doc of s.importedOverlays) {
+          if (doc.paths?.length) {
+            restored.push({ ...doc, warnings: doc.warnings ?? [] });
+          } else if (doc.source.assetId) {
+            try {
+              const file = await fetchAssetAsFileForAdmin(doc.source.assetId, doc.source.filename, "application/octet-stream");
+              const parsed = await parseOverlayFile(file);
+              restored.push({
+                ...createImportedOverlay(doc.role, parsed, print, doc.label, { assetId: doc.source.assetId, sourceFile: file }),
+                alignment: doc.alignment,
+                autoFit: doc.autoFit,
+                visible: doc.visible,
+              });
+            } catch (error) {
+              console.warn("[reopen-admin] overlay re-parse failed:", error);
+            }
+          }
+        }
+        setImageInfo((current) => current ? { ...current, importedOverlays: restored } : current);
+      }
       setCurrentDesignName(design.name);
       setIsReadOnlyView(true);
       setReadOnlyOwnerEmail(design.ownerEmail);
@@ -1568,6 +1815,31 @@ export default function ImageEditor({
       } catch (thumbError) {
         console.warn("[save] thumbnail upload failed (non-fatal):", thumbError);
       }
+      const persistedOverlays: ReturnType<typeof overlayToDocument>[] = [];
+      for (const overlay of imageInfo.importedOverlays ?? []) {
+        let overlayAssetId = overlay.source.assetId;
+        if (!overlayAssetId && overlay.sourceFile) {
+          try {
+            const uploaded = await uploadAsset(overlay.sourceFile, overlay.source.filename, "source_overlay");
+            overlayAssetId = uploaded.id;
+          } catch (error) {
+            console.warn("[save] overlay asset upload failed:", error);
+          }
+        }
+        persistedOverlays.push(overlayToDocument({
+          ...overlay,
+          source: { ...overlay.source, assetId: overlayAssetId },
+        }));
+      }
+      if (persistedOverlays.length) {
+        setImageInfo((current) => current ? {
+          ...current,
+          importedOverlays: (current.importedOverlays ?? []).map((overlay) => {
+            const saved = persistedOverlays.find((doc) => doc.id === overlay.id);
+            return saved?.source.assetId ? { ...overlay, source: { ...overlay.source, assetId: saved.source.assetId } } : overlay;
+          }),
+        } : current);
+      }
       const state = serializeDesign({
         sourceAssetId: assetId!,
         imageInfo: imageInfo as unknown as Parameters<typeof serializeDesign>[0]["imageInfo"],
@@ -1575,11 +1847,12 @@ export default function ImageEditor({
         resizeSettings,
         shapeSettings,
         strokeMode,
-        stickerSize,
+        stickerSize: stickerSize as unknown as Parameters<typeof serializeDesign>[0]["stickerSize"],
         cutContourLabel,
         lockedContour,
         spotPreviewData: spotPreviewData as unknown as Parameters<typeof serializeDesign>[0]["spotPreviewData"],
         segmentationData,
+        importedOverlays: persistedOverlays,
       });
       if (mode === "save" && currentDesignId) {
         await designMutations.update.mutateAsync({
@@ -1722,6 +1995,33 @@ export default function ImageEditor({
     setIsProcessing(true);
     
     try {
+      const overlays = imageInfo.importedOverlays ?? [];
+      const customCut = customCutOverlay(overlays);
+      const customSpots = customSpotOverlays(overlays);
+      const filteredSpots = filterTracedSpotColors(spotColors, overlays);
+
+      if (customCut) {
+        const nameWithoutExt = imageInfo.file.name.replace(/\.[^/.]+$/, '');
+        const liveSpots = spotPreviewDataRef.current;
+        const importedSpotMap = (liveSpots.pixelMap && liveSpots.mapWidth && liveSpots.mapHeight)
+          ? { pixelMap: liveSpots.pixelMap, mapWidth: liveSpots.mapWidth, mapHeight: liveSpots.mapHeight }
+          : undefined;
+        await downloadImportedOverlayPDF({
+          image: imageInfo.image,
+          imageInfo,
+          resizeSettings,
+          overlays,
+          filename: `${nameWithoutExt}_with_cutcontour.pdf`,
+          backgroundColor: strokeSettings.backgroundColor,
+          singleArtboard,
+          cutContourLabel: customCut.label || cutContourLabel,
+          spotColors: filteredSpots,
+          spotPixelMap: importedSpotMap,
+        });
+        setIsProcessing(false);
+        return;
+      }
+
       // PDF with an existing spot-color contour — every download button in the UI sends 'standard', never 'cutcontour', so this must not be gated on downloadType or it's unreachable dead code.
       if (imageInfo.isPDF && imageInfo.pdfCutContourInfo?.hasCutContour) {
         const { generatePDFWithVectorCutContour } = await import('./lib/pdf-parser');
@@ -1738,9 +2038,10 @@ export default function ImageEditor({
           imageInfo.dpi || 300,
           `${nameWithoutExt}_with_cutcontour.pdf`,
           cutContourLabel,
-          spotColors,
+          filteredSpots,
           singleArtboard,
           importedSpotMap,
+          customSpots,
         );
         setIsProcessing(false);
         return;
@@ -1966,13 +2267,14 @@ export default function ImageEditor({
             resizeSettings,
             filename,
             cachedData,
-            spotColors,
+            filteredSpots ?? spotColors,
             singleArtboard,
             cutContourLabel,
             lockedContour ? { label: lockedContour.label, pathPoints: lockedContour.pathPoints, allPathPoints: lockedContour.allPathPoints, widthInches: lockedContour.widthInches, heightInches: lockedContour.heightInches } : null,
             { qrCodes: imageInfo.qrCodes, enabled: imageInfo.qrRerenderEnabled === true },
             spotPixelMap,
-            imageInfo
+            imageInfo,
+            customSpots,
           );
         } else if (shapeSettings.enabled) {
           // Shape background mode: Download PDF with shape + CutContour spot color
@@ -1987,11 +2289,13 @@ export default function ImageEditor({
             shapeSettings,
             resizeSettings,
             filename,
-            spotColors,
+            filteredSpots ?? spotColors,
             singleArtboard,
             cutContourLabel,
             lockedContour ? { label: lockedContour.label, pathPoints: lockedContour.pathPoints, allPathPoints: lockedContour.allPathPoints, widthInches: lockedContour.widthInches, heightInches: lockedContour.heightInches, imageOffsetX: lockedContour.imageOffsetX, imageOffsetY: lockedContour.imageOffsetY } : null,
-            spotPixelMap
+            spotPixelMap,
+            false,
+            customSpots,
           );
         } else {
           setIsProcessing(false);
@@ -2225,6 +2529,14 @@ export default function ImageEditor({
           onSpotPaintApplied={() => setPendingSpotPaint(null)}
           spotColorRestore={spotColorRestore}
           enableSpotColors={spotsEnabled}
+          importedOverlays={imageInfo?.importedOverlays}
+          selectedOverlayId={selectedOverlayId}
+          onOverlaySelect={setSelectedOverlayId}
+          onOverlayUpload={handleOverlayUpload}
+          onOverlayRemove={handleOverlayRemove}
+          onOverlayChange={handleOverlayChange}
+          onOverlayAlignmentChange={handleOverlayAlignmentChange}
+          onOverlayAlignmentReset={handleOverlayAlignmentReset}
         />
       </div>
       {mode === "gangsheet" && gangSheetOpen && (
@@ -2357,7 +2669,7 @@ export default function ImageEditor({
 
             <div className="flex-1"></div>
             
-            {lockedContour && (
+            {lockedContour && !customCutOverlay(imageInfo?.importedOverlays) && (
               <div className="flex items-center gap-1.5 px-2 py-1 bg-indigo-50 rounded border border-indigo-200">
                 <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
                 <span className="text-[10px] text-indigo-600 font-medium">{lockedContour.label}</span>
@@ -2403,6 +2715,9 @@ export default function ImageEditor({
             spotPaintMode={spotPaintMode}
             magicWandMode={magicWandMode}
             onMagicWandPick={handleMagicWandClick}
+            onOverlayAlignmentChange={handleOverlayAlignmentChange}
+            selectedOverlayId={selectedOverlayId}
+            onOverlaySelect={setSelectedOverlayId}
             onSpotColorClick={(colorIndex, regionId) => {
               if (spotPaintMode) {
                 if (snapshotTimerRef.current) {

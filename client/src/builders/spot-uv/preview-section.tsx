@@ -16,6 +16,9 @@ import { drawGangSheetPreview } from "./lib/gang-sheet-preview";
 import { gangSheetPreviewResolution } from "./lib/gang-sheet-preview-resolution";
 import type { GangSheetItem, GangSheetSettings, PackResult } from "./lib/gang-sheet";
 import { createSpotOverlayCanvas as buildSpotOverlayCanvas, overlayCacheKey } from "./lib/spot-overlay";
+import { defaultOverlayPreviewStyle, overlayById, overlayByRole, overlayInkBox } from "./lib/imported-overlay";
+import { overlayPolylinesForPreview, alignedOverlayPaths } from "./lib/overlay-export";
+import { applyOverlayUserNudge, applyOverlayUserScale } from "./lib/overlay-align";
 
 export interface GangSheetCanvasView {
   items: GangSheetItem[];
@@ -44,6 +47,9 @@ interface PreviewSectionProps {
   spotPaintMode?: 'white' | 'gloss' | 'both' | 'clear' | null;
   magicWandMode?: boolean;
   onMagicWandPick?: (imageX: number, imageY: number) => void;
+  onOverlayAlignmentChange?: (id: string, patch: Partial<import("./lib/imported-overlay").ImportedVectorOverlay["alignment"]>) => void;
+  selectedOverlayId?: string | null;
+  onOverlaySelect?: (id: string) => void;
   fileName?: string;
   onResizeChange?: (settings: Partial<ResizeSettings>) => void;
   onUndo?: () => void;
@@ -57,15 +63,14 @@ interface PreviewSectionProps {
 }
 
 const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
-  ({ imageInfo, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, spotPreviewData, showCutLineInfo, onDetectedAlgorithm, detectedShapeType, detectedShapeInfo, detectedAlgorithm, onStrokeChange, lockedContour, segmentationData, onSpotColorClick, spotPaintMode, magicWandMode, onMagicWandPick, fileName, onResizeChange, onUndo, onRedo, canUndo, canRedo, readOnly, gangSheetView, isEnhancing, onPreviewStatus }, ref) => {
+  ({ imageInfo, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, spotPreviewData, showCutLineInfo, onDetectedAlgorithm, detectedShapeType, detectedShapeInfo, detectedAlgorithm, onStrokeChange, lockedContour, segmentationData, onSpotColorClick, spotPaintMode, magicWandMode, onMagicWandPick, onOverlayAlignmentChange, selectedOverlayId, onOverlaySelect, fileName, onResizeChange, onUndo, onRedo, canUndo, canRedo, readOnly, gangSheetView, isEnhancing, onPreviewStatus }, ref) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const frameRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const stageRef = useRef<HTMLDivElement>(null);
     const [zoom, setZoom] = useState(1);
-    const [panX, setPanX] = useState(0);
-    const [panY, setPanY] = useState(0);
+    const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
     const zoomRef = useRef(1);
-    const panXRef = useRef(0);
-    const panYRef = useRef(0);
     const [backgroundColor, setBackgroundColor] = useState("#1e3a5f");
     const lastImageRef = useRef<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -76,6 +81,16 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     const lastSettingsRef = useRef<string>('');
     const contourDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lastImageRenderRef = useRef<{x: number; y: number; width: number; height: number} | null>(null);
+    const overlayDragRef = useRef<{
+      id: string;
+      mode: "move" | "scale";
+      startClientX: number;
+      startClientY: number;
+      startAlign: import("./lib/imported-overlay").ImportedVectorOverlay["alignment"];
+      startBox: { minX: number; minY: number; width: number; height: number };
+      print: { widthInches: number; heightInches: number };
+    } | null>(null);
+    const [overlayCursor, setOverlayCursor] = useState<string | null>(null);
     const [previewDims, setPreviewDims] = useState({ width: 360, height: 360 });
     const spotPulseRef = useRef(1);
     const spotAnimFrameRef = useRef<number | null>(null);
@@ -99,7 +114,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     
     // Drag-to-pan state
     const [isDragging, setIsDragging] = useState(false);
-    const dragStartRef = useRef<{x: number; y: number; panX: number; panY: number} | null>(null);
+    const dragStartRef = useRef<{x: number; y: number; scrollLeft: number; scrollTop: number} | null>(null);
     const mouseDownPosRef = useRef<{x: number; y: number} | null>(null);
     
     // Select-to-zoom state
@@ -107,80 +122,140 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     const [selectionRect, setSelectionRect] = useState<{x: number; y: number; w: number; h: number} | null>(null);
     const selectionStartRef = useRef<{x: number; y: number} | null>(null);
     const isSelectingRef = useRef(false);
-    
-    const applyTransformToDOM = useCallback(() => {
-      const el = canvasRef.current;
-      if (!el) return;
-      el.style.transform = `translate(${panXRef.current}%, ${panYRef.current}%) scale(${zoomRef.current})`;
-      el.style.transition = 'none';
-    }, []);
+    const pendingViewRef = useRef<{ contentX: number; contentY: number; offsetX: number; offsetY: number } | null>(null);
 
-    const syncRefsToState = useCallback(() => {
-      setZoom(zoomRef.current);
-      setPanX(panXRef.current);
-      setPanY(panYRef.current);
-    }, []);
+    const clampZoom = useCallback((value: number) => Math.min(5, Math.max(0.25, value)), []);
 
-    const maxPanXY = useCallback((z?: number) => {
-      const effectiveZoom = z ?? zoomRef.current;
-      const limit = 25 + Math.max(0, (effectiveZoom - 1) * 50);
-      return { x: limit, y: limit };
-    }, []);
-    
-    const clampPan = useCallback((px: number, py: number, z?: number) => {
-      const limit = maxPanXY(z);
-      return {
-        x: Math.max(-limit.x, Math.min(limit.x, px)),
-        y: Math.max(-limit.y, Math.min(limit.y, py)),
-      };
-    }, [maxPanXY]);
-    
-    const pxToPanXY = useCallback((dxPx: number, dyPx: number) => {
-      const el = canvasRef.current;
-      if (!el) return { dx: 0, dy: 0 };
-      const w = Math.max(el.clientWidth, 1);
-      const h = Math.max(el.clientHeight, 1);
-      return { dx: (dxPx / w) * 100, dy: (dyPx / h) * 100 };
-    }, []);
-    
+    const zoomTo = useCallback((nextZoom: number, anchor?: { clientX: number; clientY: number }) => {
+      const vp = containerRef.current;
+      const z = clampZoom(nextZoom);
+      const prevLayout = Math.max(zoomRef.current, 1);
+      if (vp) {
+        let offsetX = vp.clientWidth / 2;
+        let offsetY = vp.clientHeight / 2;
+        if (anchor) {
+          const rect = vp.getBoundingClientRect();
+          offsetX = anchor.clientX - rect.left;
+          offsetY = anchor.clientY - rect.top;
+        }
+        pendingViewRef.current = {
+          contentX: (vp.scrollLeft + offsetX) / prevLayout,
+          contentY: (vp.scrollTop + offsetY) / prevLayout,
+          offsetX,
+          offsetY,
+        };
+      }
+      zoomRef.current = z;
+      setZoom(z);
+    }, [clampZoom]);
+
+    useLayoutEffect(() => {
+      const vp = containerRef.current;
+      if (!vp) return;
+      if (zoom <= 1) {
+        vp.scrollLeft = 0;
+        vp.scrollTop = 0;
+        pendingViewRef.current = null;
+        return;
+      }
+      const pending = pendingViewRef.current;
+      pendingViewRef.current = null;
+      if (!pending) return;
+      const layoutZ = Math.max(zoom, 1);
+      vp.scrollLeft = pending.contentX * layoutZ - pending.offsetX;
+      vp.scrollTop = pending.contentY * layoutZ - pending.offsetY;
+    }, [zoom]);
+
     const applySelectionZoom = useCallback((selX: number, selY: number, selW: number, selH: number) => {
-      const container = containerRef.current;
-      if (!container || selW < 20 || selH < 20) return;
-      
-      const containerRect = container.getBoundingClientRect();
-      const elemW = containerRect.width;
-      const elemH = containerRect.height;
-      if (elemW === 0 || elemH === 0) return;
+      const vp = containerRef.current;
+      if (!vp || selW < 20 || selH < 20) return;
+      const viewW = vp.clientWidth;
+      const viewH = vp.clientHeight;
+      if (viewW === 0 || viewH === 0) return;
 
-      const scxPct = ((selX + selW / 2) / elemW - 0.5) * 100;
-      const scyPct = ((selY + selH / 2) / elemH - 0.5) * 100;
+      const layoutZ = Math.max(zoomRef.current, 1);
+      const contentX = (selX + vp.scrollLeft) / layoutZ;
+      const contentY = (selY + vp.scrollTop) / layoutZ;
+      const contentW = selW / layoutZ;
+      const contentH = selH / layoutZ;
+      const nextZoom = clampZoom(Math.min(viewW / contentW, viewH / contentH));
+      pendingViewRef.current = {
+        contentX: contentX + contentW / 2,
+        contentY: contentY + contentH / 2,
+        offsetX: viewW / 2,
+        offsetY: viewH / 2,
+      };
+      zoomRef.current = nextZoom;
+      setZoom(nextZoom);
+    }, [clampZoom]);
 
-      const contentCxPct = (scxPct - panXRef.current) / zoomRef.current;
-      const contentCyPct = (scyPct - panYRef.current) / zoomRef.current;
+    const visibleOverlays = (imageInfo?.importedOverlays ?? []).filter((overlay) => overlay.visible);
+    const editableOverlay = overlayById(visibleOverlays, selectedOverlayId)
+      ?? visibleOverlays.find((overlay) => overlay.role === "cutline")
+      ?? visibleOverlays[0];
 
-      const contentWPct = (selW / elemW * 100) / zoomRef.current;
-      const contentHPct = (selH / elemH * 100) / zoomRef.current;
+    const overlayScreenBox = (overlay = editableOverlay) => {
+      const imgRect = lastImageRenderRef.current;
+      if (!overlay || !imgRect) return null;
+      const print = { widthInches: resizeSettings.widthInches, heightInches: resizeSettings.heightInches };
+      const box = overlayInkBox(alignedOverlayPaths(overlay, print));
+      if (!box) return null;
+      return {
+        overlay,
+        print,
+        box,
+        imgRect,
+        x: imgRect.x + (box.minX / print.widthInches) * imgRect.width,
+        y: imgRect.y + (box.minY / print.heightInches) * imgRect.height,
+        w: (box.width / print.widthInches) * imgRect.width,
+        h: (box.height / print.heightInches) * imgRect.height,
+      };
+    };
 
-      const newZoom = Math.min(100 / contentWPct, 100 / contentHPct);
-      const clampedZoom = Math.min(Math.max(newZoom, 1), 5);
+    const hitOverlayHandle = (canvasX: number, canvasY: number) => {
+      const handle = 10;
+      const pad = 8;
+      const selected = overlayScreenBox(editableOverlay);
+      if (selected) {
+        const corners = [
+          { x: selected.x, y: selected.y },
+          { x: selected.x + selected.w, y: selected.y },
+          { x: selected.x + selected.w, y: selected.y + selected.h },
+          { x: selected.x, y: selected.y + selected.h },
+        ];
+        for (const corner of corners) {
+          if (Math.abs(canvasX - corner.x) <= handle && Math.abs(canvasY - corner.y) <= handle) {
+            return { kind: "scale" as const, screen: selected };
+          }
+        }
+      }
+      const hits = visibleOverlays
+        .map((overlay) => overlayScreenBox(overlay))
+        .filter((screen): screen is NonNullable<typeof screen> => !!screen)
+        .filter((screen) => (
+          canvasX >= screen.x - pad && canvasX <= screen.x + screen.w + pad
+          && canvasY >= screen.y - pad && canvasY <= screen.y + screen.h + pad
+        ))
+        .sort((a, b) => (a.w * a.h) - (b.w * b.h));
+      if (hits[0]) return { kind: "move" as const, screen: hits[0] };
+      return null;
+    };
 
-      const newPanX = -clampedZoom * contentCxPct;
-      const newPanY = -clampedZoom * contentCyPct;
-      
-      const clamped = clampPan(newPanX, newPanY, clampedZoom);
-      zoomRef.current = clampedZoom;
-      panXRef.current = clamped.x;
-      panYRef.current = clamped.y;
-      setZoom(clampedZoom);
-      setPanX(clamped.x);
-      setPanY(clamped.y);
-    }, [clampPan]);
+    const clientToCanvas = (clientX: number, clientY: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (clientX - rect.left) * (canvas.width / rect.width),
+        y: (clientY - rect.top) * (canvas.height / rect.height),
+      };
+    };
 
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
       e.preventDefault();
       
-      if (selectZoomMode && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
+      if (selectZoomMode && frameRef.current) {
+        const rect = frameRef.current.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
         selectionStartRef.current = { x, y };
@@ -188,15 +263,44 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         setSelectionRect({ x, y, w: 0, h: 0 });
         return;
       }
+
+      if (!readOnly && !magicWandMode && !spotPaintMode && onOverlayAlignmentChange) {
+        const pt = clientToCanvas(e.clientX, e.clientY);
+        const hit = pt ? hitOverlayHandle(pt.x, pt.y) : null;
+        if (hit) {
+          onOverlaySelect?.(hit.screen.overlay.id);
+          if (hit.screen.overlay.alignment.locked) {
+            setOverlayCursor(null);
+            return;
+          }
+          overlayDragRef.current = {
+            id: hit.screen.overlay.id,
+            mode: hit.kind,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+            startAlign: { ...hit.screen.overlay.alignment },
+            startBox: hit.screen.box,
+            print: hit.screen.print,
+          };
+          setOverlayCursor(hit.kind === "scale" ? "nwse-resize" : "move");
+          return;
+        }
+      }
       
       setIsDragging(true);
-      dragStartRef.current = { x: e.clientX, y: e.clientY, panX: panXRef.current, panY: panYRef.current };
+      const vp = containerRef.current;
+      dragStartRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        scrollLeft: vp?.scrollLeft ?? 0,
+        scrollTop: vp?.scrollTop ?? 0,
+      };
       mouseDownPosRef.current = { x: e.clientX, y: e.clientY };
-    }, [selectZoomMode]);
+    }, [selectZoomMode, readOnly, magicWandMode, spotPaintMode, onOverlayAlignmentChange, editableOverlay, resizeSettings.widthInches, resizeSettings.heightInches]);
     
     const handleMouseMove = useCallback((e: React.MouseEvent) => {
-      if (isSelectingRef.current && selectionStartRef.current && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
+      if (isSelectingRef.current && selectionStartRef.current && frameRef.current) {
+        const rect = frameRef.current.getBoundingClientRect();
         const curX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
         const curY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
         const sx = selectionStartRef.current.x;
@@ -209,16 +313,62 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         });
         return;
       }
+
+      const overlayDrag = overlayDragRef.current;
+      const dragOverlay = overlayDrag ? overlayById(visibleOverlays, overlayDrag.id) : undefined;
+      if (overlayDrag && onOverlayAlignmentChange && dragOverlay && !dragOverlay.alignment.locked) {
+        const imgRect = lastImageRenderRef.current;
+        if (!imgRect || imgRect.width <= 0 || imgRect.height <= 0) return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        const dxPx = (e.clientX - overlayDrag.startClientX) * (canvas.width / rect.width);
+        const dyPx = (e.clientY - overlayDrag.startClientY) * (canvas.height / rect.height);
+        const startOverlay = { ...dragOverlay, alignment: overlayDrag.startAlign };
+        if (overlayDrag.mode === "move") {
+          const dxIn = (dxPx / imgRect.width) * overlayDrag.print.widthInches;
+          const dyIn = (dyPx / imgRect.height) * overlayDrag.print.heightInches;
+          onOverlayAlignmentChange(overlayDrag.id, applyOverlayUserNudge(startOverlay, overlayDrag.print, dxIn, dyIn));
+        } else {
+          const cx = overlayDrag.startBox.minX + overlayDrag.startBox.width / 2;
+          const cy = overlayDrag.startBox.minY + overlayDrag.startBox.height / 2;
+          const startCanvas = clientToCanvas(overlayDrag.startClientX, overlayDrag.startClientY);
+          const nowCanvas = clientToCanvas(e.clientX, e.clientY);
+          if (startCanvas && nowCanvas) {
+            const boxCx = imgRect.x + (cx / overlayDrag.print.widthInches) * imgRect.width;
+            const boxCy = imgRect.y + (cy / overlayDrag.print.heightInches) * imgRect.height;
+            const startDist = Math.hypot(startCanvas.x - boxCx, startCanvas.y - boxCy);
+            const nowDist = Math.hypot(nowCanvas.x - boxCx, nowCanvas.y - boxCy);
+            if (startDist > 2) {
+              onOverlayAlignmentChange(
+                overlayDrag.id,
+                applyOverlayUserScale(startOverlay, overlayDrag.print, overlayDrag.startAlign.scale * (nowDist / startDist)),
+              );
+            }
+          }
+        }
+        return;
+      }
+
+      if (!overlayDragRef.current && !readOnly && onOverlayAlignmentChange) {
+        const pt = clientToCanvas(e.clientX, e.clientY);
+        const hit = pt ? hitOverlayHandle(pt.x, pt.y) : null;
+        setOverlayCursor(hit ? (hit.kind === "scale" ? "nwse-resize" : "move") : null);
+      }
       
       if (!isDragging || !dragStartRef.current || zoomRef.current <= 1) return;
-      const d = pxToPanXY(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y);
-      const clamped = clampPan(dragStartRef.current.panX + d.dx, dragStartRef.current.panY + d.dy);
-      panXRef.current = clamped.x;
-      panYRef.current = clamped.y;
-      applyTransformToDOM();
-    }, [isDragging, pxToPanXY, clampPan, applyTransformToDOM]);
+      const vp = containerRef.current;
+      if (!vp) return;
+      vp.scrollLeft = dragStartRef.current.scrollLeft - (e.clientX - dragStartRef.current.x);
+      vp.scrollTop = dragStartRef.current.scrollTop - (e.clientY - dragStartRef.current.y);
+    }, [isDragging, onOverlayAlignmentChange, editableOverlay, readOnly, resizeSettings.widthInches, resizeSettings.heightInches]);
     
     const handleMouseUp = useCallback((e: React.MouseEvent) => {
+      if (overlayDragRef.current) {
+        overlayDragRef.current = null;
+        setOverlayCursor(null);
+        return;
+      }
       if (isSelectingRef.current && selectionRect) {
         isSelectingRef.current = false;
         selectionStartRef.current = null;
@@ -234,7 +384,6 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       setIsDragging(false);
       dragStartRef.current = null;
       mouseDownPosRef.current = null;
-      syncRefsToState();
 
       if (downPos) {
         const dx = e.clientX - downPos.x;
@@ -261,7 +410,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
           handleCanvasClick(e);
         }
       }
-    }, [onSpotColorClick, spotPreviewData, imageInfo, selectionRect, applySelectionZoom, syncRefsToState, magicWandMode, onMagicWandPick]);
+    }, [onSpotColorClick, spotPreviewData, imageInfo, selectionRect, applySelectionZoom, magicWandMode, onMagicWandPick]);
     
     const handleCanvasClick = useCallback((e: React.MouseEvent) => {
       if (!imageInfo || !spotPreviewData?.pixelMap || !onSpotColorClick || !canvasRef.current) return;
@@ -305,6 +454,10 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     }, [imageInfo, spotPreviewData, onSpotColorClick]);
 
     const handleMouseLeave = useCallback(() => {
+      if (overlayDragRef.current) {
+        overlayDragRef.current = null;
+        setOverlayCursor(null);
+      }
       if (isSelectingRef.current) {
         isSelectingRef.current = false;
         selectionStartRef.current = null;
@@ -313,9 +466,8 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       if (isDragging) {
         setIsDragging(false);
         dragStartRef.current = null;
-        syncRefsToState();
       }
-    }, [isDragging, syncRefsToState]);
+    }, [isDragging]);
     
     const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
 
@@ -333,7 +485,13 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       if (e.touches.length !== 1) return;
       const t = e.touches[0];
       setIsDragging(true);
-      dragStartRef.current = { x: t.clientX, y: t.clientY, panX: panXRef.current, panY: panYRef.current };
+      const vp = containerRef.current;
+      dragStartRef.current = {
+        x: t.clientX,
+        y: t.clientY,
+        scrollLeft: vp?.scrollLeft ?? 0,
+        scrollTop: vp?.scrollTop ?? 0,
+      };
     }, []);
     
     const handleTouchMove = useCallback((e: React.TouchEvent) => {
@@ -341,38 +499,32 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       if (e.touches.length === 2 && pinchRef.current) {
         const newDist = getTouchDist(e.touches[0], e.touches[1]);
         const scale = newDist / pinchRef.current.dist;
-        const newZoom = Math.min(Math.max(pinchRef.current.zoom * scale, 0.5), 5);
-        zoomRef.current = newZoom;
-        if (newZoom <= 1) { panXRef.current = 0; panYRef.current = 0; }
-        applyTransformToDOM();
+        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        zoomTo(pinchRef.current.zoom * scale, { clientX: midX, clientY: midY });
         return;
       }
       if (!isDragging || !dragStartRef.current || e.touches.length !== 1 || zoomRef.current <= 1) return;
       const t = e.touches[0];
-      const d = pxToPanXY(t.clientX - dragStartRef.current.x, t.clientY - dragStartRef.current.y);
-      const clamped = clampPan(dragStartRef.current.panX + d.dx, dragStartRef.current.panY + d.dy);
-      panXRef.current = clamped.x;
-      panYRef.current = clamped.y;
-      applyTransformToDOM();
-    }, [isDragging, pxToPanXY, clampPan, applyTransformToDOM]);
+      const vp = containerRef.current;
+      if (!vp) return;
+      vp.scrollLeft = dragStartRef.current.scrollLeft - (t.clientX - dragStartRef.current.x);
+      vp.scrollTop = dragStartRef.current.scrollTop - (t.clientY - dragStartRef.current.y);
+    }, [isDragging, zoomTo]);
     
     const handleTouchEnd = useCallback(() => {
       pinchRef.current = null;
       setIsDragging(false);
       dragStartRef.current = null;
-      syncRefsToState();
-    }, [syncRefsToState]);
+    }, []);
     
     const resetView = useCallback(() => {
-      zoomRef.current = 1; panXRef.current = 0; panYRef.current = 0;
-      setZoom(1);
-      setPanX(0);
-      setPanY(0);
+      zoomTo(1);
       setSelectZoomMode(false);
       setSelectionRect(null);
       isSelectingRef.current = false;
       selectionStartRef.current = null;
-    }, []);
+    }, [zoomTo]);
     
     useEffect(() => {
       if (!selectZoomMode) return;
@@ -388,24 +540,18 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       return () => window.removeEventListener('keydown', handleKeyDown);
     }, [selectZoomMode]);
     
-    const wheelSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
     const handleWheel = useCallback((e: React.WheelEvent) => {
+      const zoomGesture = e.ctrlKey || e.metaKey || zoomRef.current <= 1;
+      if (!zoomGesture) return;
+      if (e.deltaY > 0 && zoomRef.current <= 1 && !e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      if (e.deltaY < 0) {
-        zoomRef.current = Math.min(zoomRef.current + 0.15, 5);
-      } else {
-        zoomRef.current = Math.max(zoomRef.current - 0.15, 1);
-        if (zoomRef.current <= 1) { panXRef.current = 0; panYRef.current = 0; }
-      }
-      applyTransformToDOM();
-      if (wheelSyncRef.current) clearTimeout(wheelSyncRef.current);
-      wheelSyncRef.current = setTimeout(() => { wheelSyncRef.current = null; syncRefsToState(); }, 150);
-    }, [applyTransformToDOM, syncRefsToState]);
+      zoomTo(
+        e.deltaY < 0 ? zoomRef.current + 0.15 : zoomRef.current - 0.15,
+        { clientX: e.clientX, clientY: e.clientY },
+      );
+    }, [zoomTo]);
     
     useEffect(() => { zoomRef.current = zoom; }, [zoom]);
-    useEffect(() => { panXRef.current = panX; }, [panX]);
-    useEffect(() => { panYRef.current = panY; }, [panY]);
 
     useEffect(() => {
       if (!imageInfo) {
@@ -445,23 +591,19 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       
       setZoom(1);
       zoomRef.current = 1;
-      setPanX(0);
-      setPanY(0);
-      panXRef.current = 0;
-      panYRef.current = 0;
     }, [imageInfo]);
 
     useEffect(() => {
-      if (!containerRef.current) return;
+      if (!frameRef.current) return;
       let resizeTimer: ReturnType<typeof setTimeout> | null = null;
       const updateSize = () => {
-        const container = containerRef.current;
-        if (!container) return;
-        // Match the drawable content box, not the outer box including padding.
-        // This keeps bitmap-to-pointer coordinates aligned on every viewport.
-        const style = getComputedStyle(container);
-        const width = container.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-        const height = container.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+        const frame = frameRef.current;
+        if (!frame) return;
+        const width = frame.clientWidth;
+        const height = frame.clientHeight;
+        setFrameSize((previous) => (
+          previous.w === width && previous.h === height ? previous : { w: width, h: height }
+        ));
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         const safeWidth = Math.max(220, Math.round(width * dpr));
         const safeHeight = Math.max(220, Math.round(height * dpr));
@@ -476,7 +618,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         if (resizeTimer) clearTimeout(resizeTimer);
         resizeTimer = setTimeout(updateSize, 150);
       });
-      observer.observe(containerRef.current);
+      observer.observe(frameRef.current);
       return () => { observer.disconnect(); if (resizeTimer) clearTimeout(resizeTimer); };
     }, []);
     
@@ -556,7 +698,8 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         contourDebounceRef.current = null;
       }
 
-      if (!imageInfo || !strokeSettings.enabled || shapeSettings.enabled) {
+      const hasCustomCut = !!overlayByRole(imageInfo?.importedOverlays, "cutline");
+      if (!imageInfo || !strokeSettings.enabled || shapeSettings.enabled || hasCustomCut) {
         contourPendingRef.current = false;
         contourCacheRef.current = null;
         contourTransformRef.current = null;
@@ -707,10 +850,6 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       if (!gangSheetView) return;
       setZoom(1);
       zoomRef.current = 1;
-      setPanX(0);
-      setPanY(0);
-      panXRef.current = 0;
-      panYRef.current = 0;
     }, [!!gangSheetView, gangSheetView?.settings.sheetWidth, gangSheetView?.settings.sheetHeight]);
 
     useEffect(() => {
@@ -779,7 +918,8 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       // Determine which background color to use:
       // - For PDFs with CutContour, use strokeSettings.backgroundColor
       // - For regular images, use local backgroundColor state
-      const hasPdfCutContour = imageInfo.isPDF && imageInfo.pdfCutContourInfo?.hasCutContour;
+      const hasCustomCut = !!overlayByRole(imageInfo.importedOverlays, "cutline");
+      const hasPdfCutContour = !hasCustomCut && imageInfo.isPDF && imageInfo.pdfCutContourInfo?.hasCutContour;
       const effectiveBackgroundColor = hasPdfCutContour 
         ? strokeSettings.backgroundColor 
         : backgroundColor;
@@ -928,6 +1068,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
           contentOffsetX, contentOffsetY, contentWidth, contentHeight,
           offsetX, offsetY, scaledWidth, scaledHeight
         );
+        lastImageRenderRef.current = { x: offsetX, y: offsetY, width: scaledWidth, height: scaledHeight };
         
         ctx.restore();
         
@@ -1000,8 +1141,75 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
         }
 
       }
+
+      const overlays = imageInfo.importedOverlays?.filter((overlay) => overlay.visible) ?? [];
+      const imgRect = lastImageRenderRef.current;
+      if (overlays.length > 0 && imgRect && canvas) {
+        const print = { widthInches: resizeSettings.widthInches, heightInches: resizeSettings.heightInches };
+        for (const overlay of overlays) {
+          const polylines = overlayPolylinesForPreview(overlay, print);
+          ctx.save();
+          ctx.beginPath();
+          for (const path of polylines) {
+            if (path.length < 2) continue;
+            ctx.moveTo(
+              imgRect.x + (path[0].x / print.widthInches) * imgRect.width,
+              imgRect.y + (path[0].y / print.heightInches) * imgRect.height,
+            );
+            for (let i = 1; i < path.length; i++) {
+              ctx.lineTo(
+                imgRect.x + (path[i].x / print.widthInches) * imgRect.width,
+                imgRect.y + (path[i].y / print.heightInches) * imgRect.height,
+              );
+            }
+            ctx.closePath();
+          }
+          const style = overlay.previewStyle ?? defaultOverlayPreviewStyle(overlay.role);
+          const hex = style.color.replace("#", "");
+          const r = parseInt(hex.slice(0, 2), 16) || 0;
+          const g = parseInt(hex.slice(2, 4), 16) || 0;
+          const b = parseInt(hex.slice(4, 6), 16) || 0;
+          ctx.globalAlpha = Math.min(1, Math.max(0.12, style.opacity));
+          ctx.setLineDash(style.dashed ? [5, 4] : []);
+          if (style.mode === "stroke" || overlay.role === "cutline") {
+            ctx.strokeStyle = `rgb(${r},${g},${b})`;
+            ctx.lineWidth = style.dashed ? 2.1 : 1.75;
+            ctx.stroke();
+          }
+          if (style.mode === "fill") {
+            ctx.fillStyle = `rgba(${r},${g},${b},1)`;
+            ctx.fill("evenodd");
+          }
+          ctx.globalAlpha = 1;
+          ctx.restore();
+        }
+        const active = overlayById(overlays, selectedOverlayId) ?? editableOverlay;
+        if (active && !readOnly) {
+          const box = overlayInkBox(alignedOverlayPaths(active, print));
+          if (box) {
+            const x = imgRect.x + (box.minX / print.widthInches) * imgRect.width;
+            const y = imgRect.y + (box.minY / print.heightInches) * imgRect.height;
+            const w = (box.width / print.widthInches) * imgRect.width;
+            const h = (box.height / print.heightInches) * imgRect.height;
+            const handleStroke = (active.previewStyle ?? defaultOverlayPreviewStyle(active.role)).color;
+            ctx.save();
+            ctx.strokeStyle = "rgba(255,255,255,0.7)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            ctx.strokeRect(x, y, w, h);
+            ctx.setLineDash([]);
+            ctx.fillStyle = "#ffffff";
+            ctx.strokeStyle = handleStroke;
+            for (const [hx, hy] of [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]) {
+              ctx.fillRect(hx - 4, hy - 4, 8, 8);
+              ctx.strokeRect(hx - 4, hy - 4, 8, 8);
+            }
+            ctx.restore();
+          }
+        }
+      }
       
-      if (lockedContour && lockedContour.previewPathPoints.length > 2 && canvas) {
+      if (lockedContour && !hasCustomCut && lockedContour.previewPathPoints.length > 2 && canvas) {
         // Collect all path arrays to draw (multi-path for zero hero, single for normal)
         const pathArrays: Array<Array<{x: number; y: number}>> =
           lockedContour.allPreviewPathPoints && lockedContour.allPreviewPathPoints.length > 0
@@ -1109,7 +1317,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       return () => {
         if (renderRafRef.current) { cancelAnimationFrame(renderRafRef.current); renderRafRef.current = null; }
       };
-    }, [imageInfo, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, backgroundColor, isProcessing, spotPreviewData, previewDims.height, previewDims.width, lockedContour, segmentationData, gangSheetView, gangSheetView ? zoom : 1, isEnhancing, onPreviewStatus]);
+    }, [imageInfo, imageInfo?.importedOverlays, strokeSettings, resizeSettings, shapeSettings, cadCutBounds, backgroundColor, isProcessing, spotPreviewData, previewDims.height, previewDims.width, lockedContour, segmentationData, gangSheetView, gangSheetView ? zoom : 1, isEnhancing, onPreviewStatus]);
 
     useEffect(() => {
       if (!spotPreviewData?.enabled) {
@@ -1149,14 +1357,18 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     const createSpotOverlayCanvas = (source?: HTMLImageElement | HTMLCanvasElement): HTMLCanvasElement | null => {
       if (!imageInfo || !spotPreviewData?.enabled) return null;
       const colors = spotPreviewData.colors;
-      const cacheKey = overlayCacheKey(colors);
+      const skipChannels = {
+        white: !!overlayByRole(imageInfo.importedOverlays, "spotWhite"),
+        gloss: !!overlayByRole(imageInfo.importedOverlays, "spotGloss"),
+      };
+      const cacheKey = overlayCacheKey(colors, skipChannels);
       if (spotOverlayCacheRef.current?.key === cacheKey) {
         return spotOverlayCacheRef.current.canvas;
       }
       const pixelMap = (spotPreviewData.pixelMap && spotPreviewData.mapWidth && spotPreviewData.mapHeight)
         ? { pixelMap: spotPreviewData.pixelMap, mapWidth: spotPreviewData.mapWidth, mapHeight: spotPreviewData.mapHeight }
         : undefined;
-      const overlayCanvas = buildSpotOverlayCanvas(source || imageInfo.image, colors, pixelMap);
+      const overlayCanvas = buildSpotOverlayCanvas(source || imageInfo.image, colors, pixelMap, skipChannels);
       if (!overlayCanvas) return null;
       spotOverlayCacheRef.current = { key: cacheKey, canvas: overlayCanvas };
       return overlayCanvas;
@@ -1675,51 +1887,66 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
 
             <div className="flex flex-col items-start">
               <div className="flex w-full">
-                <div 
-                  ref={containerRef}
-                  onWheel={handleWheel}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                  onMouseLeave={handleMouseLeave}
-                  onTouchStart={handleTouchStart}
-                  onTouchMove={handleTouchMove}
-                  onTouchEnd={handleTouchEnd}
-                  className={`relative w-full flex items-center justify-center ${isTransparentBg ? 'checkerboard' : ''} ${magicWandMode ? 'cursor-crosshair ring-2 ring-fuchsia-400 ring-opacity-70' : spotPaintMode ? 'cursor-crosshair' : selectZoomMode ? 'cursor-crosshair' : zoom > 1 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'} ${showHighlight ? 'ring-4 ring-indigo-400 ring-opacity-75 transition-shadow duration-300' : ''}`}
-                  style={{ 
+                <div
+                  ref={frameRef}
+                  className={`relative w-full ${showHighlight ? 'ring-4 ring-indigo-400 ring-opacity-75 transition-shadow duration-300' : ''} ${magicWandMode ? 'ring-2 ring-fuchsia-400 ring-opacity-70' : ''}`}
+                  style={{
                     width: '100%',
                     height: 'auto',
                     aspectRatio: gangSheetView
                       ? `${gangSheetView.settings.sheetWidth} / ${gangSheetView.settings.sheetHeight}`
                       : imageInfo ? `${imageInfo.image.width} / ${imageInfo.image.height}` : '1 / 1',
                     maxHeight: '70vh',
-                    padding: '12px',
                     backgroundColor: isTransparentBg ? 'transparent' : effectiveBackground,
-                    overflow: 'hidden',
-                    userSelect: 'none',
-                    touchAction: 'none'
                   }}
                 >
-                <canvas 
-                  ref={canvasRef}
-                  className="relative z-10 block"
-                  style={{ 
-                    position: 'absolute',
-                    inset: '12px',
-                    width: 'calc(100% - 24px)',
-                    height: 'calc(100% - 24px)',
-                    maxWidth: '100%',
-                    maxHeight: '100%',
-                    transform: `translate(${panX}%, ${panY}%) scale(${zoom * (resizeAnimState?.scale ?? 1)})`,
-                    transformOrigin: 'center',
-                    transition: resizeAnimState
-                      ? (resizeAnimState.transitioning
-                        ? 'transform 0.38s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease-out'
-                        : 'none')
-                      : (isDragging || isSelectingRef.current) ? 'none' : 'transform 0.3s ease-out',
-                    opacity: resizeAnimState?.opacity ?? 1,
+                <div
+                  ref={containerRef}
+                  onWheel={handleWheel}
+                  className={`spot-uv-artboard-scroll absolute inset-0 ${isTransparentBg ? 'checkerboard' : ''}`}
+                  style={{
+                    overflow: zoom > 1 ? 'scroll' : 'hidden',
+                    userSelect: 'none',
                   }}
-                />
+                >
+                  <div
+                    ref={stageRef}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseLeave}
+                    onTouchStart={handleTouchStart}
+                    onTouchMove={handleTouchMove}
+                    onTouchEnd={handleTouchEnd}
+                    className={`${selectZoomMode || magicWandMode || spotPaintMode ? 'cursor-crosshair' : overlayCursor ? '' : zoom > 1 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'}`}
+                    style={{
+                      cursor: overlayCursor || undefined,
+                      position: 'relative',
+                      width: zoom <= 1 ? '100%' : `${Math.max(frameSize.w, 1) * zoom}px`,
+                      height: zoom <= 1 ? '100%' : `${Math.max(frameSize.h, 1) * zoom}px`,
+                      minWidth: '100%',
+                      minHeight: '100%',
+                      touchAction: 'none',
+                    }}
+                  >
+                    <canvas
+                      ref={canvasRef}
+                      className="relative z-10 block"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        transform: `scale(${Math.min(zoom, 1) * (resizeAnimState?.scale ?? 1)})`,
+                        transformOrigin: 'center',
+                        transition: resizeAnimState
+                          ? (resizeAnimState.transitioning
+                            ? 'transform 0.38s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease-out'
+                            : 'none')
+                          : (isDragging || isSelectingRef.current) ? 'none' : 'transform 0.3s ease-out',
+                        opacity: resizeAnimState?.opacity ?? 1,
+                      }}
+                    />
+                  </div>
+                </div>
                 
                 {selectionRect && selectionRect.w > 0 && selectionRect.h > 0 && (
                   <div
@@ -1737,7 +1964,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
                 )}
                 
                 {!imageInfo && !gangSheetView && (
-                  <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <div className="text-center">
                       <ImageIcon className="w-16 h-16 text-gray-300 mx-auto mb-4" />
                       <p className="text-gray-500">Upload an image to see preview</p>
@@ -1758,59 +1985,71 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
               </div>
             </div>
 
-            <div className="mx-2 my-2">
-              <div className="flex items-center justify-center gap-1.5 bg-gray-50/50 rounded-lg p-1.5 border border-gray-100">
+            <div className="relative z-20 mx-2 my-2">
+              <div
+                className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl border-2 border-cyan-400 bg-cyan-100 px-2 py-1.5 shadow-sm sm:gap-2"
+                style={{ touchAction: "manipulation" }}
+              >
                 <Button
-                  variant="ghost"
+                  type="button"
+                  variant="secondary"
                   size="sm"
-                  onClick={() => setZoom(prev => Math.min(prev + 0.25, 5))}
-                  className="h-7 w-7 p-0 hover:bg-gray-100 rounded-md"
-                  title="Zoom In"
-                >
-                  <ZoomIn className="h-3.5 w-3.5 text-gray-500" />
-                </Button>
-
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setZoom(prev => Math.max(prev - 0.25, 0.25))}
-                  className="h-7 w-7 p-0 hover:bg-gray-100 rounded-md"
+                  onClick={() => zoomTo(zoom - 0.25)}
+                  disabled={zoom <= 0.25}
+                  className="h-11 w-11 min-h-11 min-w-11 p-0 rounded-lg bg-white text-cyan-900 hover:bg-white/90 disabled:bg-white/60"
                   title="Zoom Out"
+                  aria-label="Zoom Out"
                 >
-                  <ZoomOut className="h-3.5 w-3.5 text-gray-500" />
+                  <ZoomOut className="h-4 w-4" />
                 </Button>
 
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setSelectZoomMode(prev => !prev)}
-                  className={`h-7 px-2 rounded-md text-xs transition-colors ${
-                    selectZoomMode
-                      ? 'bg-indigo-500 text-white hover:bg-indigo-600'
-                      : 'hover:bg-gray-100 text-gray-500'
-                  }`}
-                  title="Select area to zoom into"
-                >
-                  <Scan className="h-3.5 w-3.5 mr-1" />
-                  Select Zoom
-                </Button>
-                
-                <span className="text-xs text-gray-500 min-w-[42px] text-center font-medium">
+                <span className="min-w-[3.25rem] rounded-lg bg-white px-2 py-2 text-center text-sm font-bold tabular-nums leading-none text-cyan-950">
                   {Math.round(zoom * 100)}%
                 </span>
-                
-                {zoom > 1 && (
-                  <Button 
-                    variant="ghost"
-                    size="sm"
-                    onClick={resetView}
-                    className="h-7 px-2 hover:bg-gray-100 rounded-md text-gray-500 text-xs"
-                    title="Reset to 100%"
-                  >
-                    <RotateCcw className="h-3 w-3 mr-1" />
-                    Reset
-                  </Button>
-                )}
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => zoomTo(zoom + 0.25)}
+                  disabled={zoom >= 5}
+                  className="h-11 w-11 min-h-11 min-w-11 p-0 rounded-lg bg-white text-cyan-900 hover:bg-white/90 disabled:bg-white/60"
+                  title="Zoom In"
+                  aria-label="Zoom In"
+                >
+                  <ZoomIn className="h-4 w-4" />
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setSelectZoomMode(prev => !prev)}
+                  className={`h-11 min-h-11 min-w-11 px-3 rounded-lg text-sm font-semibold ${
+                    selectZoomMode
+                      ? "bg-indigo-600 text-white hover:bg-indigo-700"
+                      : "bg-white text-cyan-900 hover:bg-white/90"
+                  }`}
+                  title="Select area to zoom into"
+                  aria-label="Select Zoom"
+                >
+                  <Scan className="h-4 w-4" />
+                  <span className="hidden sm:inline">Select</span>
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={resetView}
+                  disabled={Math.abs(zoom - 1) < 0.01 && !selectZoomMode}
+                  className="h-11 min-h-11 px-3 rounded-lg bg-[#0e7490] text-white hover:bg-[#0f766e] disabled:bg-white disabled:text-cyan-800/50"
+                  title="Reset zoom to 100%"
+                  aria-label="Reset zoom"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  Reset
+                </Button>
               </div>
             </div>
 

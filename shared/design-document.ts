@@ -119,8 +119,65 @@ export const designSourceSchema = z.object({
   dpi: z.number(),
 });
 
-export const serializedDesignSchemaV1 = z.object({
-  version: z.literal(1),
+const overlaySegSchema = z.union([
+  z.object({ op: z.literal("m"), x: z.number(), y: z.number() }),
+  z.object({ op: z.literal("l"), x: z.number(), y: z.number() }),
+  z.object({
+    op: z.literal("c"),
+    x1: z.number(),
+    y1: z.number(),
+    x2: z.number(),
+    y2: z.number(),
+    x: z.number(),
+    y: z.number(),
+  }),
+  z.object({ op: z.literal("h") }),
+]);
+
+export const importedOverlaySchema = z.object({
+  id: z.string(),
+  role: z.enum(["cutline", "spotWhite", "spotGloss"]),
+  label: z.string().trim().min(1),
+  source: z.object({
+    filename: z.string(),
+    kind: z.enum(["eps", "pdf", "svg"]),
+    assetId: z.number().int().optional(),
+  }),
+  nativePage: z.object({
+    widthInches: z.number(),
+    heightInches: z.number(),
+  }),
+  paths: z.array(z.object({
+    segs: z.array(overlaySegSchema),
+    closed: z.boolean(),
+  })),
+  alignment: z.object({
+    offsetXInches: z.number(),
+    offsetYInches: z.number(),
+    scale: z.number(),
+    rotationDeg: z.number(),
+    locked: z.boolean(),
+  }),
+  autoFit: z.object({
+    mode: z.enum(["artboard", "contain", "source"]),
+    scale: z.number(),
+    offsetXInches: z.number(),
+    offsetYInches: z.number(),
+    printWidthInches: z.number(),
+    printHeightInches: z.number(),
+    warnings: z.array(z.string()),
+  }),
+  visible: z.boolean(),
+  previewStyle: z.object({
+    color: z.string(),
+    mode: z.enum(["fill", "stroke"]),
+    dashed: z.boolean(),
+    opacity: z.number(),
+  }).optional(),
+  warnings: z.array(z.string()).optional(),
+});
+
+const serializedDesignBaseSchema = z.object({
   source: designSourceSchema,
   strokeSettings: strokeSettingsSchema,
   resizeSettings: resizeSettingsSchema,
@@ -136,7 +193,19 @@ export const serializedDesignSchemaV1 = z.object({
   pdfContours: z.array(pdfContourSchema).optional(),
 });
 
-// Union of all versions — currently just v1; add v2 + a migration step when the shape changes.
-export const serializedDesignSchema = serializedDesignSchemaV1;
+export const serializedDesignSchemaV1 = serializedDesignBaseSchema.extend({
+  version: z.literal(1),
+});
+
+export const serializedDesignSchemaV2 = serializedDesignBaseSchema.extend({
+  version: z.literal(2),
+  importedOverlays: z.array(importedOverlaySchema).optional(),
+});
+
+export const serializedDesignSchema = z.union([
+  serializedDesignSchemaV2,
+  serializedDesignSchemaV1,
+]);
 
 export type SerializedDesign = z.infer<typeof serializedDesignSchema>;
+export type ImportedOverlayDocument = z.infer<typeof importedOverlaySchema>;

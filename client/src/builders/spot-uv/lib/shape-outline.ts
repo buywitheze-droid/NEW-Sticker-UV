@@ -4,6 +4,8 @@ import { cropImageToContent } from './image-crop';
 import { simplifyPathForPDF, buildSmoothPdfPath, type SpotColorInput } from './contour-outline';
 import { pdfName, pdfNameToken, cutContourMetadata } from '@/lib/pdf-name';
 import { addSpotColorVectorsToPDF, type SpotPixelMapData } from './spot-color-vectors';
+import type { ImportedVectorOverlay } from './imported-overlay';
+import { emitImportedSpotOverlays } from './overlay-export';
 
 function rotatePoint(px: number, py: number, cx: number, cy: number, deg: number): { x: number; y: number } {
   if (deg === 0) return { x: px, y: py };
@@ -353,7 +355,8 @@ export async function downloadShapePDF(
   cutContourLabel: string = 'CutContour',
   lockedContour?: { label: string; pathPoints: Array<{x: number; y: number}>; allPathPoints?: Array<Array<{x: number; y: number}>>; widthInches: number; heightInches: number; imageOffsetX: number; imageOffsetY: number } | null,
   spotPixelMap?: SpotPixelMapData,
-  returnBase64: boolean = false
+  returnBase64: boolean = false,
+  importedSpotOverlays?: ImportedVectorOverlay[],
 ): Promise<void | string> {
   const shapeDims = resolveShapeDimensions(shapeSettings, resizeSettings);
   const { widthInches, heightInches } = shapeDims;
@@ -542,6 +545,24 @@ export async function downloadShapePDF(
       singleArtboard, widthPts, heightPts, spotPixelMap
     );
     console.log('[downloadShapePDF] Added spot color vector layers:', spotLabels);
+  }
+  if (importedSpotOverlays && importedSpotOverlays.length > 0) {
+    const pageWidthInches = widthPts / 72;
+    const pageHeightInches = heightPts / 72;
+    const imgOffsetXInches = (pageWidthInches - resizeSettings.widthInches) / 2;
+    const imgOffsetYInches = (pageHeightInches - resizeSettings.heightInches) / 2;
+    emitImportedSpotOverlays(
+      pdfDoc,
+      page,
+      importedSpotOverlays,
+      { widthInches: resizeSettings.widthInches, heightInches: resizeSettings.heightInches },
+      pageHeightInches,
+      imgOffsetXInches,
+      imgOffsetYInches,
+      singleArtboard,
+      widthPts,
+      heightPts,
+    );
   }
   
   const whiteName = spotColors?.find(c => c.spotWhite)?.spotWhiteName || 'RDG_WHITE';

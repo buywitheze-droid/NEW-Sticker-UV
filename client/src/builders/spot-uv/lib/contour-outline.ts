@@ -3,6 +3,8 @@ import { PDFDocument, PDFName, PDFArray, PDFDict, PDFPage, rgb, degrees } from '
 import { removeLoopsWithClipper, ensureClockwise, detectSelfIntersections, gaussianSmoothContour, subsamplePolygon, polygonToSplinePath } from "./clipper-path";
 import { getContourWorkerManager, type BezierPath } from "./contour-worker-manager";
 import { addSpotColorVectorsToPDF, type SpotPixelMapData } from "./spot-color-vectors";
+import type { ImportedVectorOverlay } from "./imported-overlay";
+import { emitImportedSpotOverlays } from "./overlay-export";
 import { planVectorQROverlays, detectQRAppearance, type DetectedQR, type QRAppearance } from "./qr";
 import { hasVectorPrintSource, createVectorPrintSourceResolver } from "./vector-print-source";
 import { vectorPrintDpi } from "./vector-raster-limits";
@@ -2319,7 +2321,8 @@ export async function downloadContourPDF(
   lockedContour?: { label: string; pathPoints: Array<{x: number; y: number}>; allPathPoints?: Array<Array<{x: number; y: number}>>; widthInches: number; heightInches: number } | null,
   qrOptions?: QRExportOptions,
   spotPixelMap?: SpotPixelMapData,
-  imageInfo?: ImageInfo
+  imageInfo?: ImageInfo,
+  importedSpotOverlays?: ImportedVectorOverlay[],
 ): Promise<void> {
   try {
     console.log('[downloadContourPDF] Starting, cached:', !!cachedContourData);
@@ -2706,6 +2709,20 @@ export async function downloadContourPDF(
       singleArtboard, widthPts, heightPts, spotPixelMap
     );
     console.log('[downloadContourPDF] Added spot color vector layers:', spotLabels);
+  }
+  if (importedSpotOverlays && importedSpotOverlays.length > 0) {
+    emitImportedSpotOverlays(
+      pdfDoc,
+      page,
+      importedSpotOverlays,
+      { widthInches: resizeSettings.widthInches, heightInches: resizeSettings.heightInches },
+      heightInches,
+      imageOffsetX,
+      imageOffsetY,
+      singleArtboard,
+      widthPts,
+      heightPts,
+    );
   }
   
   const whiteName = spotColors?.find(c => c.spotWhite)?.spotWhiteName || 'RDG_WHITE';

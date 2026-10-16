@@ -122,8 +122,23 @@ export function createSpotOverlayCanvas(
   source: HTMLImageElement | HTMLCanvasElement,
   colors: SpotOverlayColor[],
   pixelMap?: SpotPixelMapData,
+  skipChannels?: { white?: boolean; gloss?: boolean },
 ): HTMLCanvasElement | null {
-  if (!colors.some(hasAnySpotFlag)) return null;
+  if (skipChannels?.white && skipChannels?.gloss) return null;
+  const effective = skipChannels
+    ? colors.map((color) => ({
+        ...color,
+        spotWhite: skipChannels.white ? false : color.spotWhite,
+        spotGloss: skipChannels.gloss ? false : color.spotGloss,
+        regions: color.regions?.map((region) => ({
+          ...region,
+          spotWhite: skipChannels.white ? false : region.spotWhite,
+          spotGloss: skipChannels.gloss ? false : region.spotGloss,
+        })),
+      }))
+    : colors;
+  if (!effective.some(hasAnySpotFlag)) return null;
+  colors = effective;
 
   const mapW = pixelMap?.mapWidth ?? 0;
   const mapH = pixelMap?.mapHeight ?? 0;
@@ -194,8 +209,9 @@ export function createSpotOverlayCanvas(
   return canvas;
 }
 
-export function overlayCacheKey(colors: SpotOverlayColor[]): string {
-  return colors.map(c => {
+export function overlayCacheKey(colors: SpotOverlayColor[], skipChannels?: { white?: boolean; gloss?: boolean }): string {
+  const skip = `${skipChannels?.white ? 'W' : ''}${skipChannels?.gloss ? 'G' : ''}`;
+  return skip + ':' + colors.map(c => {
     const regions = c.regions
       ? c.regions.map(r => `${r.spotWhite ? 'w' : ''}${r.spotGloss ? 'g' : ''}`).join('')
       : '';

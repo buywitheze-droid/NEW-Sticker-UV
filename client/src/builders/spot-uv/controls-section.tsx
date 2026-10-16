@@ -13,9 +13,11 @@ import { generateShapePDFBase64, calculateShapeDimensions, getMinimumShapeOffset
 import { getContourWorkerManager, type DetectedAlgorithm } from "./lib/contour-worker-manager";
 import { extractColorsFromImageAsync, detectColorRegionsAsync, ExtractedColor, type ColorExtractionResult } from "./lib/color-extractor";
 import { mergeDetectedColorRegions } from "./lib/spot-selection-state";
-import AutoSpotLayersPanel from "./auto-spot-layers-panel";
-import { Download, ChevronDown, ChevronUp, Eye, EyeOff, Pencil, Check, X, Layers, Palette, Pipette, Trash2, Link, Unlink, Settings2, Spline, Shapes } from "lucide-react";
+import { Download, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Eye, EyeOff, Pencil, Check, X, Layers, Palette, Pipette, Trash2, Link, Unlink, Settings2, Spline, Shapes, Upload } from "lucide-react";
 import SizeInput from "@/components/image-editor/size-input";
+import type { ImportedVectorOverlay, OverlayRole } from "./lib/imported-overlay";
+import { defaultOverlayPreviewStyle, overlayByRole, overlaysByRole, type OverlayPreviewStyle } from "./lib/imported-overlay";
+import { alignmentWarnings, applyOverlayUserNudge, applyOverlayUserScale } from "./lib/overlay-align";
 
 export interface SpotPreviewData {
   enabled: boolean;
@@ -72,6 +74,14 @@ interface ControlsSectionProps {
   onSpotPaintApplied?: () => void;
   spotColorRestore?: { colors: ExtractedColor[]; id: number; spotWhiteName?: string; spotGlossName?: string } | null;
   enableSpotColors?: boolean;
+  importedOverlays?: ImportedVectorOverlay[];
+  selectedOverlayId?: string | null;
+  onOverlaySelect?: (id: string) => void;
+  onOverlayUpload?: (file: File, role: OverlayRole, replaceId?: string | null) => void;
+  onOverlayRemove?: (id: string) => void;
+  onOverlayChange?: (id: string, patch: Partial<ImportedVectorOverlay>) => void;
+  onOverlayAlignmentChange?: (id: string, patch: Partial<ImportedVectorOverlay["alignment"]>) => void;
+  onOverlayAlignmentReset?: (id: string) => void;
 }
 
 export default function ControlsSection({
@@ -112,6 +122,14 @@ export default function ControlsSection({
   onSpotPaintApplied,
   spotColorRestore,
   enableSpotColors = true,
+  importedOverlays,
+  selectedOverlayId,
+  onOverlaySelect,
+  onOverlayUpload,
+  onOverlayRemove,
+  onOverlayChange,
+  onOverlayAlignmentChange,
+  onOverlayAlignmentReset,
 }: ControlsSectionProps) {
   const { toast } = useToast();
   const [showSpotColors, setShowSpotColors] = useState(false);
@@ -127,6 +145,15 @@ export default function ControlsSection({
   const [showSizeSection, setShowSizeSection] = useState(false);
   const [spotWhiteName, setSpotWhiteName] = useState("RDG_WHITE");
   const [spotGlossName, setSpotGlossName] = useState("RDG_GLOSS");
+  const cutOverlayInputRef = useRef<HTMLInputElement>(null);
+  const whiteOverlayInputRef = useRef<HTMLInputElement>(null);
+  const glossOverlayInputRef = useRef<HTMLInputElement>(null);
+  const customCutOverlays = overlaysByRole(importedOverlays, "cutline");
+  const customCutOverlay = customCutOverlays[0];
+  const customWhiteOverlay = overlayByRole(importedOverlays, "spotWhite");
+  const customGlossOverlay = overlayByRole(importedOverlays, "spotGloss");
+  const hasEmbeddedPdfCut = !!(imageInfo?.isPDF && imageInfo?.pdfCutContourInfo?.hasCutContour && customCutOverlays.length === 0);
+  const overlayReplaceIdRef = useRef<string | null>(null);
   const [editingWhiteName, setEditingWhiteName] = useState(false);
   const [editingGlossName, setEditingGlossName] = useState(false);
   const [tempWhiteName, setTempWhiteName] = useState("");
@@ -134,6 +161,7 @@ export default function ControlsSection({
   const [cutContourDraft, setCutContourDraft] = useState<string | null>(null);
   const [expandedColorIndex, setExpandedColorIndex] = useState<number | null>(null);
   const [showOutlineType, setShowOutlineType] = useState(true);
+  const [openPositionById, setOpenPositionById] = useState<Record<string, boolean>>({});
   const [showShapeAdvanced, setShowShapeAdvanced] = useState(false);
   const [contourPanelOpen, setContourPanelOpen] = useState(true);
   const [shapePanelOpen, setShapePanelOpen] = useState(true);
@@ -555,8 +583,213 @@ export default function ControlsSection({
     }
   };
 
+  const acceptOverlay = ".eps,.pdf,.svg,application/postscript,application/pdf,image/svg+xml";
+  const pickOverlay = (role: OverlayRole, replaceId?: string | null) => {
+    overlayReplaceIdRef.current = replaceId ?? null;
+    const input = role === "cutline" ? cutOverlayInputRef.current : role === "spotWhite" ? whiteOverlayInputRef.current : glossOverlayInputRef.current;
+    input?.click();
+  };
+  const overlayRoleTheme = (role: OverlayRole) => (
+    role === "cutline"
+      ? { card: "border-fuchsia-400/35 bg-fuchsia-500/10", selected: "bg-fuchsia-500/20 ring-1 ring-fuchsia-300/70", title: "text-[#f0abfc]", badge: "bg-fuchsia-400 text-[#3b0764]", badgeLabel: "Cut" }
+      : role === "spotWhite"
+        ? { card: "border-amber-400/40 bg-amber-500/10", selected: "bg-amber-500/20 ring-1 ring-amber-300/70", title: "text-[#fbbf24]", badge: "bg-amber-400 text-[#422006]", badgeLabel: "White" }
+        : { card: "border-teal-400/40 bg-teal-500/10", selected: "bg-teal-500/20 ring-1 ring-teal-300/70", title: "text-[#5eead4]", badge: "bg-teal-400 text-[#042f2e]", badgeLabel: "Gloss" }
+  );
+  const renderOverlayCard = (overlay: ImportedVectorOverlay, title: string) => {
+    const warnings = imageInfo
+      ? alignmentWarnings(overlay, { widthInches: resizeSettings.widthInches, heightInches: resizeSettings.heightInches })
+      : overlay.warnings;
+    const selected = selectedOverlayId === overlay.id;
+    const theme = overlayRoleTheme(overlay.role);
+    const positionOpen = openPositionById[overlay.id] ?? selected;
+    return (
+      <div
+        key={overlay.id}
+        className={`space-y-2 rounded-lg border px-2 py-2 ${theme.card} ${selected ? theme.selected : "cursor-pointer hover:bg-white/5"}`}
+        onClick={() => onOverlaySelect?.(overlay.id)}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className={`text-sm font-medium ${theme.title}`}>
+              <span className={`mr-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${theme.badge}`}>{theme.badgeLabel}</span>
+              {title}{selected ? " · selected" : ""}
+            </p>
+            <p className="text-[11px] text-[#9fb3c8] break-all">{overlay.source.filename}</p>
+          </div>
+          <div className="flex gap-1">
+            <button type="button" onClick={(e) => { e.stopPropagation(); pickOverlay(overlay.role, overlay.id); }} className="px-2 py-1 rounded text-[10px] bg-white/10 text-[#e8eef6] hover:bg-white/15">Replace</button>
+            <button type="button" onClick={(e) => { e.stopPropagation(); onOverlayRemove?.(overlay.id); }} className="px-2 py-1 rounded text-[10px] bg-red-500/15 text-[#f87171] hover:bg-red-500/25">Remove</button>
+          </div>
+        </div>
+        <label className="block text-[11px] text-[#9fb3c8]">
+          Export name
+          <input
+            value={overlay.label}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => {
+              onOverlayChange?.(overlay.id, { label: e.target.value });
+              if (overlay.role === "cutline" && customCutOverlays[0]?.id === overlay.id) onCutContourLabelChange?.(e.target.value);
+              if (overlay.role === "spotWhite") setSpotWhiteName(e.target.value);
+              if (overlay.role === "spotGloss") setSpotGlossName(e.target.value);
+            }}
+            className="mt-1 w-full h-8 px-2 rounded bg-[#2d5a8a] border border-white/15 text-[#e8eef6] text-xs"
+          />
+        </label>
+        {(() => {
+          const style = overlay.previewStyle ?? defaultOverlayPreviewStyle(overlay.role);
+          const colors = overlay.role === "cutline"
+            ? ["#FF00FF", "#ff3b3b", "#22d3ee", "#fbbf24", "#ffffff"]
+            : overlay.role === "spotWhite"
+              ? ["#f97316", "#fbbf24", "#ffffff", "#FF00FF", "#38bdf8"]
+              : ["#14b8a6", "#4ade80", "#a78bfa", "#f472b6", "#ffffff"];
+          const styles: Array<{ id: OverlayPreviewStyle["mode"]; label: string; dashed?: boolean; opacity?: number }> = overlay.role === "cutline"
+            ? [
+                { id: "stroke", label: "Solid" },
+                { id: "stroke", label: "Dashed", dashed: true },
+                { id: "fill", label: "Fill", opacity: 0.35 },
+              ]
+            : [
+                { id: "fill", label: "Fill" },
+                { id: "stroke", label: "Outline" },
+                { id: "fill", label: "Soft", opacity: 0.28 },
+                { id: "stroke", label: "Dashed", dashed: true },
+              ];
+          const setStyle = (patch: Partial<OverlayPreviewStyle>) => onOverlayChange?.(overlay.id, { previewStyle: { ...style, ...patch } });
+          return (
+            <div className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
+              <p className="text-[11px] text-[#9fb3c8]">Preview color</p>
+              <div className="flex flex-wrap gap-1.5">
+                {colors.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    title={color}
+                    onClick={() => setStyle({ color })}
+                    className={`h-6 w-6 rounded-full border ${style.color.toLowerCase() === color.toLowerCase() ? "ring-2 ring-white border-white" : "border-white/30"}`}
+                    style={{ background: color }}
+                  />
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {styles.map((item) => {
+                  const selected = style.mode === item.id && !!style.dashed === !!item.dashed && (item.opacity == null || Math.abs(style.opacity - item.opacity) < 0.05);
+                  return (
+                    <button
+                      key={`${item.label}-${item.id}`}
+                      type="button"
+                      onClick={() => setStyle({ mode: item.id, dashed: !!item.dashed, opacity: item.opacity ?? (item.id === "fill" ? 0.55 : 1) })}
+                      className={`px-2 py-1 rounded text-[10px] font-medium border ${selected ? "bg-[#22d3ee] text-[#2d5a8a] border-[#22d3ee]" : "bg-white/10 text-[#e8eef6] border-white/15 hover:bg-white/15"}`}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+        <div className="rounded-md border border-white/15 bg-black/10">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpenPositionById((prev) => ({ ...prev, [overlay.id]: !positionOpen }));
+            }}
+            className="flex w-full items-center justify-between px-2 py-1.5 text-left"
+          >
+            <span className="text-[11px] font-semibold text-[#e8eef6]">Position & size</span>
+            <ChevronDown className={`h-3.5 w-3.5 text-[#9fb3c8] transition-transform ${positionOpen ? "rotate-180" : ""}`} />
+          </button>
+          {positionOpen && (
+            <div className="space-y-2 border-t border-white/10 px-2 pb-2 pt-2" onClick={(e) => e.stopPropagation()}>
+              <p className="text-[11px] text-[#e8eef6]">Use the arrows or drag the preview. Shift+arrow is 0.001&quot;, Alt+arrow is 0.05&quot;.</p>
+              {(() => {
+                const print = { widthInches: resizeSettings.widthInches, heightInches: resizeSettings.heightInches };
+                const nudge = (dx: number, dy: number) => onOverlayAlignmentChange?.(overlay.id, applyOverlayUserNudge(overlay, print, dx, dy));
+                const arrowBtn = "flex h-7 w-7 items-center justify-center rounded bg-white/10 text-[#e8eef6] hover:bg-white/20";
+                return (
+                  <div className="flex items-center gap-3">
+                    <div className="grid grid-cols-3 gap-1 w-[96px] shrink-0">
+                      <span />
+                      <button type="button" className={arrowBtn} title="Up 0.01&quot;" onClick={() => nudge(0, -0.01)}><ChevronUp className="h-3.5 w-3.5" /></button>
+                      <span />
+                      <button type="button" className={arrowBtn} title="Left 0.01&quot;" onClick={() => nudge(-0.01, 0)}><ChevronLeft className="h-3.5 w-3.5" /></button>
+                      <span />
+                      <button type="button" className={arrowBtn} title="Right 0.01&quot;" onClick={() => nudge(0.01, 0)}><ChevronRight className="h-3.5 w-3.5" /></button>
+                      <span />
+                      <button type="button" className={arrowBtn} title="Down 0.01&quot;" onClick={() => nudge(0, 0.01)}><ChevronDown className="h-3.5 w-3.5" /></button>
+                      <span />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 flex-1">
+                      <label className="text-[11px] text-[#9fb3c8]">
+                        X
+                        <input
+                          type="number"
+                          step="0.001"
+                          value={Number(overlay.alignment.offsetXInches.toFixed(3))}
+                          onChange={(e) => onOverlayAlignmentChange?.(overlay.id, { offsetXInches: parseFloat(e.target.value) || 0 })}
+                          className="mt-1 w-full h-7 px-2 rounded bg-[#2d5a8a] border border-white/15 text-[#e8eef6] text-xs"
+                        />
+                      </label>
+                      <label className="text-[11px] text-[#9fb3c8]">
+                        Y
+                        <input
+                          type="number"
+                          step="0.001"
+                          value={Number(overlay.alignment.offsetYInches.toFixed(3))}
+                          onChange={(e) => onOverlayAlignmentChange?.(overlay.id, { offsetYInches: parseFloat(e.target.value) || 0 })}
+                          className="mt-1 w-full h-7 px-2 rounded bg-[#2d5a8a] border border-white/15 text-[#e8eef6] text-xs"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                );
+              })()}
+              <label className="block text-[11px] text-[#9fb3c8]">
+                Scale
+                <div className="mt-1 flex items-center gap-1">
+                  <button type="button" className="flex h-7 w-7 items-center justify-center rounded bg-white/10 text-[#e8eef6] hover:bg-white/20" onClick={() => onOverlayAlignmentChange?.(overlay.id, applyOverlayUserScale(overlay, { widthInches: resizeSettings.widthInches, heightInches: resizeSettings.heightInches }, overlay.alignment.scale - 0.01))}>−</button>
+                  <input
+                    type="number"
+                    min={25}
+                    max={250}
+                    step={1}
+                    value={Math.round(overlay.alignment.scale * 100)}
+                    onChange={(e) => onOverlayAlignmentChange?.(
+                      overlay.id,
+                      applyOverlayUserScale(overlay, { widthInches: resizeSettings.widthInches, heightInches: resizeSettings.heightInches }, (parseFloat(e.target.value) || 100) / 100),
+                    )}
+                    className="w-full h-7 px-2 rounded bg-[#2d5a8a] border border-white/15 text-[#e8eef6] text-xs"
+                  />
+                  <span className="text-[11px] text-[#9fb3c8]">%</span>
+                  <button type="button" className="flex h-7 w-7 items-center justify-center rounded bg-white/10 text-[#e8eef6] hover:bg-white/20" onClick={() => onOverlayAlignmentChange?.(overlay.id, applyOverlayUserScale(overlay, { widthInches: resizeSettings.widthInches, heightInches: resizeSettings.heightInches }, overlay.alignment.scale + 0.01))}>+</button>
+                </div>
+              </label>
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-1.5 text-[11px] text-[#9fb3c8]">
+                  <Checkbox checked={overlay.alignment.locked} onCheckedChange={(checked) => onOverlayAlignmentChange?.(overlay.id, { locked: !!checked })} />
+                  Lock alignment
+                </label>
+                <button type="button" onClick={() => onOverlayAlignmentReset?.(overlay.id)} className="text-[11px] text-[#22d3ee] hover:underline">Reset</button>
+              </div>
+            </div>
+          )}
+        </div>
+        {warnings.length > 0 && (
+          <ul className="text-[11px] text-amber-200/90 space-y-1">
+            {warnings.map((warning) => <li key={warning}>{warning}</li>)}
+          </ul>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4">
+      <input ref={cutOverlayInputRef} type="file" accept={acceptOverlay} className="hidden" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) onOverlayUpload?.(file, "cutline", overlayReplaceIdRef.current); overlayReplaceIdRef.current = null; }} />
+      <input ref={whiteOverlayInputRef} type="file" accept={acceptOverlay} className="hidden" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) onOverlayUpload?.(file, "spotWhite", overlayReplaceIdRef.current); overlayReplaceIdRef.current = null; }} />
+      <input ref={glossOverlayInputRef} type="file" accept={acceptOverlay} className="hidden" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) onOverlayUpload?.(file, "spotGloss", overlayReplaceIdRef.current); overlayReplaceIdRef.current = null; }} />
       {/* All Design Options Card */}
       {/* Add/Change Design button + Clear Design */}
       {onChangeDesign && (
@@ -666,28 +899,34 @@ export default function ControlsSection({
         </div>
 
         {/* Outline Type - Collapsible Dropdown */}
-        {imageInfo && <div className="border-b border-white/10">
+        {imageInfo && <div className="border-b border-white/10 border-l-4 border-l-fuchsia-400">
           <button
             onClick={() => setShowOutlineType(!showOutlineType)}
-            className={`flex items-center justify-between w-full px-4 py-3 text-left transition-colors ${showOutlineType ? 'bg-cyan-400/10 hover:bg-cyan-400/15' : 'hover:bg-white/5'}`}
+            className={`flex items-center justify-between w-full px-4 py-3 text-left transition-colors ${showOutlineType ? 'bg-fuchsia-500/20 hover:bg-fuchsia-500/25' : 'bg-fuchsia-500/10 hover:bg-fuchsia-500/15'}`}
           >
             <div className="flex items-center gap-2">
-              <Layers className="w-4 h-4 text-[#22d3ee]" />
-              <span className="text-sm font-medium text-[#e8eef6]">Outline Type</span>
+              <Layers className="w-4 h-4 text-[#f0abfc]" />
+              <span className="text-sm font-semibold text-[#f5d0fe]">Outline Type</span>
+              <span className="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-fuchsia-400 text-[#3b0764]">Cut</span>
               {(strokeSettings.enabled || shapeSettings.enabled) && (
-                <span className="text-xs text-[#9fb3c8]">
+                <span className="text-xs text-fuchsia-100/80">
                   ({strokeSettings.enabled ? 'Contour' : 'Shape'})
                 </span>
               )}
             </div>
-            <div className={`p-1 rounded-md transition-all ${showOutlineType ? 'bg-cyan-400/25' : 'bg-white/10 hover:bg-white/15'}`}>
-              <ChevronDown className={`w-4 h-4 transition-transform ${showOutlineType ? 'rotate-180 text-[#22d3ee]' : 'text-[#9fb3c8]'}`} />
+            <div className={`p-1 rounded-md transition-all ${showOutlineType ? 'bg-fuchsia-400/30' : 'bg-white/10 hover:bg-white/15'}`}>
+              <ChevronDown className={`w-4 h-4 transition-transform ${showOutlineType ? 'rotate-180 text-[#f0abfc]' : 'text-[#f5d0fe]/70'}`} />
             </div>
           </button>
 
           {showOutlineType && (
             <div className="px-4 pb-3 space-y-3">
-              {imageInfo?.isPDF && imageInfo?.pdfCutContourInfo?.hasCutContour ? (
+              {customCutOverlay ? (
+                <div className="p-2.5 bg-fuchsia-400/10 border border-fuchsia-400/25 rounded-lg">
+                  <p className="text-sm font-medium text-[#f0abfc]">Using uploaded cutline</p>
+                  <p className="text-xs text-fuchsia-200/80 mt-0.5">Contour and shape stay off while this file is attached.</p>
+                </div>
+              ) : hasEmbeddedPdfCut ? (
                 <div className="p-2.5 bg-teal-400/10 border border-teal-400/25 rounded-lg">
                   <p className="text-sm font-medium text-[#5eead4]">Cutline already in file</p>
                   {cutContourLabel && cutContourLabel !== (imageInfo.pdfCutContourInfo?.detectedLabel ?? 'CutContour') ? (
@@ -696,9 +935,12 @@ export default function ControlsSection({
                   ) : (
                     <p className="text-xs text-teal-300/80 mt-0.5">{imageInfo.pdfCutContourInfo?.detectedLabel ?? 'CutContour'} detected</p>
                   )}
+                  <button type="button" onClick={() => pickOverlay("cutline")} className="mt-2 text-xs text-[#5eead4] hover:underline">
+                    Replace with uploaded cutline
+                  </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   <button
                     onClick={() => {
                       if (strokeSettings.enabled) {
@@ -737,11 +979,25 @@ export default function ControlsSection({
                     <Shapes className={`w-4 h-4 ${shapeSettings.enabled ? 'text-white' : 'text-[#5eead4]'}`} />
                     Shape
                   </button>
+                  <button
+                    onClick={() => pickOverlay("cutline")}
+                    className="flex items-center gap-2 py-2 px-3 rounded-lg transition-all font-semibold text-sm border-2 bg-fuchsia-400/10 text-[#e8eef6] border-fuchsia-400/30 hover:bg-fuchsia-400/20 hover:border-fuchsia-300/50"
+                  >
+                    <Upload className="w-4 h-4 text-[#f0abfc]" />
+                    Upload
+                  </button>
                 </div>
               )}
+              {customCutOverlays.map((overlay, index) => renderOverlayCard(overlay, customCutOverlays.length > 1 ? `Cutline ${index + 1}` : "Uploaded cutline"))}
+              {customCutOverlays.length > 0 && (
+                <button type="button" onClick={() => pickOverlay("cutline")} className="w-full py-1.5 rounded-lg text-xs font-medium bg-fuchsia-400/15 text-[#f0abfc] border border-fuchsia-400/30 hover:bg-fuchsia-400/25">
+                  Add another cutline
+                </button>
+              )}
+              <p className="text-[11px] text-[#9fb3c8]">EPS, PDF, or SVG. Multi-page PDFs use page 1 only — upload each layer as its own file.</p>
 
               {/* Contour Settings */}
-              {strokeSettings.enabled && contourPanelOpen && !(imageInfo?.isPDF && imageInfo?.pdfCutContourInfo?.hasCutContour) && (
+              {strokeSettings.enabled && contourPanelOpen && !customCutOverlay && !hasEmbeddedPdfCut && (
                 <div className="space-y-3 pt-2 border-t border-white/10">
                   <div>
                     <Label className="text-xs text-[#9fb3c8] font-medium">Contour Margin</Label>
@@ -846,7 +1102,7 @@ export default function ControlsSection({
               )}
 
               {/* PDF CutContour Options */}
-              {imageInfo?.isPDF && imageInfo?.pdfCutContourInfo?.hasCutContour && (
+              {hasEmbeddedPdfCut && (
                 <div className="space-y-3 pt-2 border-t border-white/10">
                   <div className="text-sm font-medium text-[#e8eef6]">PDF Options</div>
                   <div>
@@ -890,7 +1146,7 @@ export default function ControlsSection({
               )}
 
               {/* Shape Settings - Redesigned UX */}
-              {shapeSettings.enabled && shapePanelOpen && !(imageInfo?.isPDF && imageInfo?.pdfCutContourInfo?.hasCutContour) && (
+              {shapeSettings.enabled && shapePanelOpen && !customCutOverlay && !hasEmbeddedPdfCut && (
                 <div className="pt-2 border-t border-white/10">
                   {/* ── Visual Shape Picker Grid ── */}
                   <div className="grid grid-cols-3 gap-1.5 px-0.5">
@@ -1216,44 +1472,43 @@ export default function ControlsSection({
           )}
         </div>}
 
-        {/* Spot Colors Button & Panel - hidden on the gangsheet builder for now */}
         {imageInfo && enableSpotColors && (
-          <AutoSpotLayersPanel
-            image={spotSourceImage}
-            colors={extractedColors}
-            pixelMap={extractionRef.current?.pixelMap}
-            mapWidth={extractionRef.current?.width}
-            mapHeight={extractionRef.current?.height}
-            onApply={(nextColors, source) => {
-              const currentExtraction = extractionRef.current;
-              const accepted = extractedColorsRef.current === source.colors
-                && spotSourceRef.current === source.image
-                && currentExtraction?.pixelMap === source.pixelMap
-                && currentExtraction?.width === source.mapWidth
-                && currentExtraction?.height === source.mapHeight;
-              if (!accepted) return false;
-              setExtractedColors(current => current === source.colors ? nextColors : current);
-              setSpotPreviewEnabled(true);
-              return true;
-            }}
-            onApplied={() => setShowSpotColors(true)}
-          />
-        )}
-        {imageInfo && enableSpotColors && (
-          <div className="border-b border-white/10">
+          <div className="border-b border-white/10 border-l-4 border-l-amber-400">
             <button
               onClick={handleSpotColorsToggle}
-              className={`flex items-center justify-between w-full px-4 py-3 text-left hover:bg-white/5 transition-colors ${showSpotColors ? 'bg-amber-400/10' : ''}`}
+              className={`flex items-center justify-between w-full px-4 py-3 text-left transition-colors ${showSpotColors ? 'bg-amber-500/20 hover:bg-amber-500/25' : 'bg-amber-500/10 hover:bg-amber-500/15'}`}
             >
               <div className="flex items-center gap-2">
                 <Palette className="w-4 h-4 text-[#fbbf24]" />
-                <span className="text-sm font-medium text-[#e8eef6]">Spot White and Gloss</span>
+                <span className="text-sm font-semibold text-[#fde68a]">Spot White and Gloss</span>
+                <span className="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-amber-400 text-[#422006]">Spot</span>
               </div>
-              <ChevronDown className={`w-4 h-4 text-[#9fb3c8] transition-transform ${showSpotColors ? 'rotate-180' : ''}`} />
+              <div className={`p-1 rounded-md transition-all ${showSpotColors ? 'bg-amber-400/30' : 'bg-white/10 hover:bg-white/15'}`}>
+                <ChevronDown className={`w-4 h-4 transition-transform ${showSpotColors ? 'rotate-180 text-[#fbbf24]' : 'text-[#fde68a]/70'}`} />
+              </div>
             </button>
 
             {showSpotColors && (
-              <div className="px-4 pb-3 space-y-3">
+              <div className="px-4 pt-3 pb-3 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => pickOverlay("spotWhite")} className="flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium bg-amber-400/15 text-[#fbbf24] border border-amber-400/30 hover:bg-amber-400/25">
+                  <Upload className="w-3 h-3" /> Upload white
+                </button>
+                <button type="button" onClick={() => pickOverlay("spotGloss")} className="flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium bg-teal-400/15 text-[#5eead4] border border-teal-400/30 hover:bg-teal-400/25">
+                  <Upload className="w-3 h-3" /> Upload gloss
+                </button>
+              </div>
+              {customWhiteOverlay && renderOverlayCard(customWhiteOverlay, "Uploaded white")}
+              {customGlossOverlay && renderOverlayCard(customGlossOverlay, "Uploaded gloss")}
+              {(customWhiteOverlay || customGlossOverlay) && (
+                <p className="text-[11px] text-[#9fb3c8]">
+                  {customWhiteOverlay && customGlossOverlay
+                    ? "Using uploaded files for white and gloss. Color checkboxes below are ignored for those channels."
+                    : customWhiteOverlay
+                      ? "Using uploaded file for white. Traced gloss is still available."
+                      : "Using uploaded file for gloss. Traced white is still available."}
+                </p>
+              )}
               <div className="flex items-center justify-end mb-2">
                 <button
                   onClick={() => setSpotPreviewEnabled(!spotPreviewEnabled)}

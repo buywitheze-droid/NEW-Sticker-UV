@@ -1,4 +1,4 @@
-import type { SerializedDesign, CutContourLabel } from "@shared/design-document";
+import type { SerializedDesign, CutContourLabel, ImportedOverlayDocument } from "@shared/design-document";
 import type { ExtractedColor } from "@/lib/color-extractor";
 import type {
   StrokeSettings,
@@ -27,6 +27,7 @@ export interface SerializeDesignParams {
   lockedContour: LockedContour | null;
   spotPreviewData: SpotPreviewData;
   segmentationData: SegmentationData;
+  importedOverlays?: ImportedOverlayDocument[];
 }
 
 export function serializeDesign(params: SerializeDesignParams): SerializedDesign {
@@ -42,10 +43,11 @@ export function serializeDesign(params: SerializeDesignParams): SerializedDesign
     lockedContour,
     spotPreviewData,
     segmentationData,
+    importedOverlays,
   } = params;
 
   return {
-    version: 1,
+    version: importedOverlays && importedOverlays.length > 0 ? 2 : 1,
     source: {
       assetId: sourceAssetId,
       kind: imageInfo.isPDF ? "pdf" : "image",
@@ -93,6 +95,7 @@ export function serializeDesign(params: SerializeDesignParams): SerializedDesign
     },
     removedColors: imageInfo.removedColors,
     qrRerenderEnabled: imageInfo.qrRerenderEnabled,
+    ...(importedOverlays && importedOverlays.length > 0 ? { importedOverlays } : {}),
   };
 }
 
@@ -139,7 +142,7 @@ export interface UploadedAsset {
 export async function uploadAsset(
   file: File | Blob,
   filename: string,
-  kind: "source_image" | "source_pdf" | "thumbnail",
+  kind: "source_image" | "source_pdf" | "source_overlay" | "thumbnail",
   dims?: { width: number; height: number }
 ): Promise<UploadedAsset> {
   const form = new FormData();

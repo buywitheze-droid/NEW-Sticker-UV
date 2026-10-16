@@ -605,6 +605,7 @@ export async function generatePDFWithVectorCutContour(
   spotColors?: import('./contour-outline').SpotColorInput[],
   singleArtboard: boolean = false,
   spotPixelMap?: import('./spot-color-vectors').SpotPixelMapData,
+  importedSpotOverlays?: import('./imported-overlay').ImportedVectorOverlay[],
 ): Promise<void> {
   const { PDFDocument, PDFName, PDFArray, PDFDict } = await import('pdf-lib');
   
@@ -710,6 +711,21 @@ export async function generatePDFWithVectorCutContour(
       pageWidth / dpi, pageHeight / dpi,
       pageHeight / dpi, 0, 0,
       singleArtboard, widthPts, heightPts, spotPixelMap
+    );
+  }
+  if (importedSpotOverlays && importedSpotOverlays.length > 0) {
+    const { emitImportedSpotOverlays } = await import('./overlay-export');
+    emitImportedSpotOverlays(
+      pdfDoc,
+      page,
+      importedSpotOverlays,
+      { widthInches: pageWidth / dpi, heightInches: pageHeight / dpi },
+      pageHeight / dpi,
+      0,
+      0,
+      singleArtboard,
+      widthPts,
+      heightPts,
     );
   }
 
