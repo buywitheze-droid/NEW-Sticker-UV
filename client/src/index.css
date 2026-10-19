@@ -116,8 +116,8 @@
 
 @media (min-width: 1024px) {
   .designer-workspace {
-    grid-template-columns: clamp(360px, 30vw, 460px) minmax(0, 1fr);
-    gap: 1.25rem;
+    grid-template-columns: clamp(340px, 24vw, 380px) minmax(0, 1fr);
+    gap: 1rem;
   }
 
   .designer-workspace--readonly {
@@ -125,23 +125,49 @@
   }
 }
 
-@media (min-width: 1800px) {
-  .designer-workspace:not(.designer-workspace--gangsheet):not(.designer-workspace--readonly) {
-    grid-template-columns: clamp(740px, 42vw, 960px) minmax(0, 1fr);
-    gap: 1.5rem;
+.designer-preview-frame {
+  height: clamp(320px, 60vh, 720px);
+}
+
+/* Restrained tool dock; extra desktop width belongs to the pasteboard.
+   Keep one mounted controls instance so extraction and editing state survive. */
+.designer-control-groups button,
+.designer-preview button {
+  min-width: 24px;
+  min-height: 24px;
+}
+
+.designer-zoom-toolbar {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-inline: auto;
+  padding: 6px;
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: 8px;
+  background: #244e7a;
+}
+
+@media (min-width: 768px) and (pointer: fine) {
+  .designer-zoom-toolbar button {
+    height: 32px;
+    min-height: 32px;
+    min-width: 32px;
+  }
+
+  .designer-zoom-toolbar button[aria-label="Zoom In"],
+  .designer-zoom-toolbar button[aria-label="Zoom Out"] {
+    width: 32px;
   }
 }
 
-/* Reflow the single mounted controls instance, never clone its extraction state.
-   Container width, rather than viewport width, keeps embedded editors usable. */
-@container designer-controls (min-width: 720px) {
-  .designer-control-groups {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: start;
-  }
-
-  .designer-control-column + .designer-control-column {
-    border-left: 1px solid rgb(255 255 255 / 0.1);
+@media (pointer: coarse) {
+  .designer-preview button {
+    min-height: 44px;
+    min-width: 44px;
   }
 }

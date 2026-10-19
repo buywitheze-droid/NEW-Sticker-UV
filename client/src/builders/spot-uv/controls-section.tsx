@@ -163,8 +163,8 @@ export default function ControlsSection({
   const [showOutlineType, setShowOutlineType] = useState(true);
   const [openPositionById, setOpenPositionById] = useState<Record<string, boolean>>({});
   const [showShapeAdvanced, setShowShapeAdvanced] = useState(false);
-  const [contourPanelOpen, setContourPanelOpen] = useState(true);
-  const [shapePanelOpen, setShapePanelOpen] = useState(true);
+  const [contourPanelOpen, setContourPanelOpen] = useState(false);
+  const [shapePanelOpen, setShapePanelOpen] = useState(false);
   const [transparentFillNotice, setTransparentFillNotice] = useState<'contour' | 'shape' | null>(null);
   const [acknowledgedTransparentPreview, setAcknowledgedTransparentPreview] = useState(false);
   const colorListRef = useRef<HTMLDivElement>(null);
@@ -943,6 +943,7 @@ export default function ControlsSection({
               ) : (
                 <div className="grid grid-cols-3 gap-2">
                   <button
+                    aria-expanded={strokeSettings.enabled && contourPanelOpen}
                     onClick={() => {
                       if (strokeSettings.enabled) {
                         setContourPanelOpen(prev => !prev);
@@ -952,9 +953,9 @@ export default function ControlsSection({
                         setContourPanelOpen(true);
                       }
                     }}
-                    className={`flex items-center gap-2 py-2 px-3 rounded-lg transition-all font-semibold text-sm border-2 ${
+                    className={`flex items-center gap-1 py-2 px-2 rounded-md transition-colors font-semibold text-sm border ${
                       strokeSettings.enabled
-                        ? 'bg-[#0e7490] text-white border-[#22d3ee] shadow-lg shadow-cyan-900/40 ring-2 ring-[#22d3ee]/50'
+                        ? 'bg-[#0e7490] text-white border-[#22d3ee]'
                         : 'bg-cyan-400/10 text-[#e8eef6] border-cyan-400/30 hover:bg-cyan-400/20 hover:border-[#22d3ee]/50'
                     }`}
                   >
@@ -962,6 +963,7 @@ export default function ControlsSection({
                     Contour
                   </button>
                   <button
+                    aria-expanded={shapeSettings.enabled && shapePanelOpen}
                     onClick={() => {
                       if (shapeSettings.enabled) {
                         setShapePanelOpen(prev => !prev);
@@ -971,9 +973,9 @@ export default function ControlsSection({
                         setShapePanelOpen(true);
                       }
                     }}
-                    className={`flex items-center gap-2 py-2 px-3 rounded-lg transition-all font-semibold text-sm border-2 ${
+                    className={`flex items-center gap-1 py-2 px-2 rounded-md transition-colors font-semibold text-sm border ${
                       shapeSettings.enabled
-                        ? 'bg-teal-600 text-white border-[#5eead4] shadow-lg shadow-teal-900/40 ring-2 ring-[#5eead4]/50'
+                        ? 'bg-teal-600 text-white border-[#5eead4]'
                         : 'bg-teal-400/10 text-[#e8eef6] border-teal-400/30 hover:bg-teal-400/20 hover:border-[#5eead4]/50'
                     }`}
                   >

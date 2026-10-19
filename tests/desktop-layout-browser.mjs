@@ -19,6 +19,7 @@ try {
     await page.getByRole("button", { name: "Outline Type", exact: true }).click();
   }
   await shape.click();
+  if (!await page.getByRole("slider", { name: "Shape Margin", exact: true }).isVisible()) await shape.click();
   await page.getByRole("slider", { name: "Shape Margin", exact: true }).waitFor();
   await page.waitForTimeout(2500);
   for (const width of [1920, 2560, 1440, 1024, 390]) {
@@ -40,16 +41,33 @@ try {
     assert.ok(metrics.overflow <= 1, `${width}: horizontal overflow ${metrics.overflow}`);
     assert.ok(metrics.workspace.width >= width - 100, `${width}: workspace not full width`);
     if (width >= 1024) {
-      assert.ok(metrics.controls.width >= 359, `${width}: cramped controls`);
+      assert.ok(metrics.controls.width >= 339 && metrics.controls.width <= 400, `${width}: controls should be readable without dominating`);
       assert.ok(metrics.artboard.x >= metrics.controls.right, `${width}: columns overlap`);
       assert.ok(metrics.artboard.width >= 500, `${width}: artboard too small`);
     }
-    if (width >= 1800) assert.equal(metrics.columns.split(" ").length, 2);
     if (width < 500) assert.ok(metrics.artboard.y > metrics.controls.y);
     await page.screenshot({ path: `/tmp/desktop-layout/${width}.png` });
     console.log(width, metrics);
   }
   await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.getByRole("button", { name: "Zoom Out", exact: true }).click();
+  assert.equal(await page.locator(".designer-zoom-toolbar").getByText("75%", { exact: true }).count(), 1);
+  await page.getByRole("button", { name: "Reset zoom", exact: true }).click();
+  assert.equal(await page.locator(".designer-zoom-toolbar").getByText("100%", { exact: true }).count(), 1);
+  // The displayed cut stays comfortably inside the preview, not edge-to-edge.
+  const inset = await page.locator(".designer-preview-frame canvas").first().evaluate(canvas => {
+    const { data } = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
+    let left = canvas.width, top = canvas.height, right = -1, bottom = -1;
+    for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
+      const i = (y * canvas.width + x) * 4;
+      if (data[i] > 200 && data[i+1] < 100 && data[i+2] > 180 && data[i+3] > 100) {
+        left = Math.min(left, x); right = Math.max(right, x);
+        top = Math.min(top, y); bottom = Math.max(bottom, y);
+      }
+    }
+    return { found: right >= 0, margin: Math.min(left, top, canvas.width-right, canvas.height-bottom) / Math.min(canvas.width, canvas.height) };
+  });
+  assert.ok(inset.found && inset.margin >= 0.09, `cut lacks pasteboard space: ${JSON.stringify(inset)}`);
   await page.getByRole("button", { name: "Add to Gang Sheet", exact: true }).click();
   await page.getByRole("button", { name: /View Gangsheet/ }).click();
   await page.getByRole("region", { name: "Gang sheet layers" }).waitFor();

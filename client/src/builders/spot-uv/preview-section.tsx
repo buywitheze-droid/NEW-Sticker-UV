@@ -26,6 +26,12 @@ export interface GangSheetCanvasView {
   packResult: PackResult;
 }
 
+// Display-only fit inset, in backing-canvas pixels (already DPR-scaled).
+// 100% means this padded fit, not physical print size or source-pixel size.
+// All render branches use the same inset; their recorded image rectangles
+// remain the source of truth for pointer maps, spot paint, and overlays.
+const previewFitInset = (width: number, height: number) => Math.min(width, height) * 0.12;
+
 interface PreviewSectionProps {
   isEnhancing?: boolean;
   onPreviewStatus?: (image: HTMLImageElement, status: 'processing' | 'ready' | 'error', error?: Error) => void;
@@ -883,7 +889,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       }
 
       if (gangSheetView) {
-        const inset = 8;
+        const inset = previewFitInset(canvasWidth, canvasHeight);
         const availW = Math.max(40, canvasWidth - inset * 2);
         const availH = Math.max(40, canvasHeight - inset * 2);
         const aspect = gangSheetView.settings.sheetWidth / Math.max(0.01, gangSheetView.settings.sheetHeight);
@@ -928,9 +934,9 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
       if (hasPdfCutContour && imageInfo.pdfCutContourInfo) {
         const cutContourInfo = imageInfo.pdfCutContourInfo;
         const hasExtractedPaths = cutContourInfo.cutContourPoints && cutContourInfo.cutContourPoints.length > 0;
-        const viewPadding = 0;
-        const availableWidth = canvas.width;
-        const availableHeight = canvas.height;
+        const viewPadding = previewFitInset(canvas.width, canvas.height);
+        const availableWidth = canvas.width - viewPadding * 2;
+        const availableHeight = canvas.height - viewPadding * 2;
         
         // Get actual content bounds of the rendered PDF (removes empty space and white background)
         const contentBounds = getImageBounds(imageInfo.image);
@@ -1491,8 +1497,9 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
 
       const bleedInches = 0.10;
       const shapeAspect = shapeDims.widthInches / shapeDims.heightInches;
-      const availableWidth = canvasWidth;
-      const availableHeight = canvasHeight;
+      const viewPadding = previewFitInset(canvasWidth, canvasHeight);
+      const availableWidth = canvasWidth - viewPadding * 2;
+      const availableHeight = canvasHeight - viewPadding * 2;
 
       let shapeWidth: number, shapeHeight: number;
       if (shapeAspect > (availableWidth / availableHeight)) {
@@ -1617,9 +1624,9 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     const drawImageWithResizePreview = (ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number) => {
       if (!imageInfo) return;
 
-      const viewPadding = 0;
-      const availableWidth = canvasWidth;
-      const availableHeight = canvasHeight;
+      const viewPadding = previewFitInset(canvasWidth, canvasHeight);
+      const availableWidth = canvasWidth - viewPadding * 2;
+      const availableHeight = canvasHeight - viewPadding * 2;
       
       if (strokeSettings.enabled && contourCacheRef.current?.canvas && !isProcessing) {
         const contourCanvas = contourCacheRef.current.canvas;
@@ -1803,13 +1810,13 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     const isTransparentBg = effectiveBackground === "transparent";
 
     return (
-      <div className="w-full min-w-0">
-        <Card className="border-white/10 shadow-sm rounded-2xl overflow-hidden" style={{ backgroundColor: "#3a6aa0" }}>
+      <div className="designer-preview w-full min-w-0">
+        <Card className="border-white/10 shadow-sm rounded-lg overflow-hidden" style={{ backgroundColor: "#3a6aa0" }}>
           <CardContent className="p-0">
             {/* Design info + preview background swatches — hidden in the admin read-only view. */}
             {!readOnly && <div className="mx-2 mt-2 mb-0 flex items-center gap-1.5 p-1.5 flex-wrap">
               {imageInfo && (
-                <div className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border-2 border-cyan-500 bg-cyan-100 px-2 py-1 shadow-sm">
+                <div className="flex flex-shrink-0 items-center gap-1.5 rounded-md border border-cyan-500/40 bg-cyan-100 px-2 py-1">
                   <span className="text-[13px] font-bold leading-none tracking-tight text-cyan-900">Size</span>
                   <span className="text-[12px] font-bold leading-none text-cyan-900">W</span>
                   <SizeInput
@@ -1844,11 +1851,11 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
               <button
                 onClick={onUndo}
                 disabled={!canUndo}
-                className="h-10 min-w-[76px] rounded-lg border-2 border-black bg-black px-2.5 text-white hover:bg-white hover:text-black transition-colors disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center gap-1.5 shadow-sm"
+                className="h-8 min-w-[68px] rounded-md border border-white/20 bg-[#244e7a] px-2.5 text-white hover:bg-[#2d5a8a] transition-colors disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center gap-1.5"
                 title="Undo"
               >
-                <Undo2 className="w-5 h-5" strokeWidth={2.5} />
-                <span className="text-[13px] font-black tracking-wide">UNDO</span>
+                <Undo2 className="w-4 h-4" />
+                <span className="text-[13px] font-semibold">UNDO</span>
               </button>
               <button
                 onClick={onRedo}
@@ -1859,7 +1866,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
                 <Redo2 className="w-4 h-4" />
               </button>
               {!(imageInfo?.isPDF && imageInfo?.pdfCutContourInfo?.hasCutContour) && (
-                <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
+                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 ml-auto">
                   {[
                     { value: 'transparent', bg: 'transparent', label: 'Preview background only — stickers print on white vinyl' },
                     { value: '#1e3a5f', bg: '#1e3a5f', label: 'Navy' },
@@ -1889,14 +1896,9 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
               <div className="flex w-full min-w-0">
                 <div
                   ref={frameRef}
-                  className={`relative w-full min-w-0 ${showHighlight ? 'ring-4 ring-indigo-400 ring-opacity-75 transition-shadow duration-300' : ''} ${magicWandMode ? 'ring-2 ring-fuchsia-400 ring-opacity-70' : ''}`}
+                  className={`designer-preview-frame relative w-full min-w-0 ${showHighlight ? 'ring-4 ring-indigo-400 ring-opacity-75 transition-shadow duration-300' : ''} ${magicWandMode ? 'ring-2 ring-fuchsia-400 ring-opacity-70' : ''}`}
                   style={{
                     width: '100%',
-                    height: 'auto',
-                    aspectRatio: gangSheetView
-                      ? `${gangSheetView.settings.sheetWidth} / ${gangSheetView.settings.sheetHeight}`
-                      : imageInfo ? `${imageInfo.image.width} / ${imageInfo.image.height}` : '1 / 1',
-                    maxHeight: '70vh',
                     backgroundColor: isTransparentBg ? 'transparent' : effectiveBackground,
                   }}
                 >
@@ -1987,7 +1989,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
 
             <div className="relative z-20 mx-2 my-2">
               <div
-                className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl border-2 border-cyan-400 bg-cyan-100 px-2 py-1.5 shadow-sm sm:gap-2"
+                className="designer-zoom-toolbar"
                 style={{ touchAction: "manipulation" }}
               >
                 <Button
@@ -2044,7 +2046,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
                   onClick={resetView}
                   disabled={Math.abs(zoom - 1) < 0.01 && !selectZoomMode}
                   className="h-11 min-h-11 px-3 rounded-lg bg-[#0e7490] text-white hover:bg-[#0f766e] disabled:bg-white disabled:text-cyan-800/50"
-                  title="Reset zoom to 100%"
+                  title="Reset zoom to 100% (fit with pasteboard)"
                   aria-label="Reset zoom"
                 >
                   <RotateCcw className="h-4 w-4" />

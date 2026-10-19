@@ -7,7 +7,7 @@ export default function StickerMaker() {
   return (
     <div className="min-h-[100dvh]" style={{ backgroundColor: "#2d5a8a" }}>
       <header
-        className="backdrop-blur-md border-b border-white/10 px-6 py-3.5 sticky top-0 z-40"
+        className="backdrop-blur-md border-b border-white/10 px-4 sm:px-6 py-2 sticky top-0 z-40"
         style={{ backgroundColor: "rgba(36, 78, 122, 0.95)" }}
       >
         <div className="w-full flex items-center justify-between" style={{ minHeight: "28px" }}>
@@ -31,7 +31,7 @@ export default function StickerMaker() {
         </div>
       </header>
 
-      <main className="w-full min-w-0 px-4 sm:px-6 2xl:px-8 py-5">
+      <main className="w-full min-w-0 px-4 sm:px-6 2xl:px-8 py-3">
         <ImageEditor
           mode="gangsheet"
           enableSpotColors

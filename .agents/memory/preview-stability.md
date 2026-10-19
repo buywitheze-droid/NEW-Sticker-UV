@@ -25,4 +25,10 @@ The Designer should use the available desktop width rather than a narrow centere
 
 **Why:** The user explicitly reported cramped controls on wide screens and requested better distribution of controls across the available space.
 
-**How to apply:** Give controls sufficient width and reflow groups on wide displays while preserving artboard space and mobile stacking. Keep only one mounted controls instance: duplicating it for responsive layouts also duplicates color extraction and state.
+**How to apply:** Keep a readable, restrained controls dock while allowing the canvas to use the remaining width; preserve mobile stacking. Keep only one mounted controls instance: duplicating it for responsive layouts also duplicates color extraction and state.
+
+Full-width must not mean oversized controls or edge-to-edge artwork.
+
+**Why:** After the full-width change, the user said the Designer felt too zoomed in and “all over my face.” Allocating nearly half a wide screen to controls made the interface more imposing, not more usable.
+
+**How to apply:** Use compact chrome, progressive disclosure, and a padded fit view with visible pasteboard. Do not shrink the entire UI through CSS zoom or change print dimensions to achieve a calmer display. Keep preview transforms and pointer-coordinate maps aligned.

@@ -2449,12 +2449,12 @@ export default function ImageEditor({
       </DialogContent>
     </Dialog>
     {mode === "gangsheet" && !gangSheetOpen && imageInfo && (
-      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border-2 border-[#4dff80]/70 bg-[#244e7a] px-3 py-2.5 shadow-lg shadow-black/30">
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
         <button
           type="button"
           onClick={() => { void handleAddToGangSheet(); }}
           disabled={isProcessing}
-          className="flex-1 flex items-center justify-center gap-2.5 h-12 rounded-lg bg-[#4dff80] hover:bg-[#2ee66a] text-[#05321a] text-base font-bold tracking-tight shadow-md disabled:opacity-50 transition-colors"
+          className="w-full sm:w-auto flex items-center justify-center gap-2 h-11 sm:h-9 px-4 rounded-md bg-[#4dff80] hover:bg-[#2ee66a] text-[#05321a] text-sm font-semibold disabled:opacity-50 transition-colors"
           title="Add current sticker to the gang sheet for batch printing"
         >
           <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
@@ -2464,7 +2464,7 @@ export default function ImageEditor({
           <button
             type="button"
             onClick={() => setGangSheetOpen(true)}
-            className="flex items-center gap-2 h-12 px-4 rounded-lg bg-[#2d5a8a]/50 hover:bg-[#2d5a8a]/70 text-white text-sm font-semibold transition-colors"
+            className="flex items-center gap-2 h-11 sm:h-9 px-3 rounded-md border border-white/20 bg-[#244e7a] hover:bg-[#2d5a8a]/70 text-white text-sm font-semibold transition-colors"
           >
             View Gangsheet
             <span className="min-w-[22px] h-[22px] flex items-center justify-center bg-[#4dff80] text-[#05321a] text-xs font-bold rounded-full px-1.5">
@@ -2557,7 +2557,7 @@ export default function ImageEditor({
       
       {/* Right area - Upload, Info, and Preview. Full width in read-only view. */}
       <div data-testid="designer-artboard" className="designer-artboard">
-        <div className="lg:sticky lg:top-24 space-y-3">
+        <div className="lg:sticky lg:top-16 space-y-3">
           {gangSheetOpen ? (
             <div className="flex items-center justify-between gap-2 bg-white rounded-lg border border-gray-100 shadow-sm px-3 py-2">
               <button
