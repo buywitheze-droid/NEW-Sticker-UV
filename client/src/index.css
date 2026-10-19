@@ -94,3 +94,54 @@
 .spot-uv-artboard-scroll::-webkit-scrollbar-corner {
   background: #0f2744;
 }
+
+/* Editor layout is independent of the preview bitmap's intrinsic dimensions. */
+.designer-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.designer-controls,
+.designer-artboard,
+.designer-control-column {
+  min-width: 0;
+}
+
+.designer-controls {
+  container-name: designer-controls;
+  container-type: inline-size;
+}
+
+@media (min-width: 1024px) {
+  .designer-workspace {
+    grid-template-columns: clamp(360px, 30vw, 460px) minmax(0, 1fr);
+    gap: 1.25rem;
+  }
+
+  .designer-workspace--readonly {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1800px) {
+  .designer-workspace:not(.designer-workspace--gangsheet):not(.designer-workspace--readonly) {
+    grid-template-columns: clamp(740px, 42vw, 960px) minmax(0, 1fr);
+    gap: 1.5rem;
+  }
+}
+
+/* Reflow the single mounted controls instance, never clone its extraction state.
+   Container width, rather than viewport width, keeps embedded editors usable. */
+@container designer-controls (min-width: 720px) {
+  .designer-control-groups {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .designer-control-column + .designer-control-column {
+    border-left: 1px solid rgb(255 255 255 / 0.1);
+  }
+}

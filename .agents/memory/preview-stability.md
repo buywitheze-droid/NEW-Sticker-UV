@@ -20,3 +20,9 @@ The settled cutline must remain visible above artwork.
 **Why:** Artwork touching a shape edge can hide a correctly positioned contour, producing an apparent preview/download mismatch even when coordinates match.
 
 **How to apply:** Compare rendered boundaries as well as numeric bounds; keep proof overlays above clipped artwork.
+
+The Designer should use the available desktop width rather than a narrow centered page.
+
+**Why:** The user explicitly reported cramped controls on wide screens and requested better distribution of controls across the available space.
+
+**How to apply:** Give controls sufficient width and reflow groups on wide displays while preserving artboard space and mobile stacking. Keep only one mounted controls instance: duplicating it for responsive layouts also duplicates color extraction and state.

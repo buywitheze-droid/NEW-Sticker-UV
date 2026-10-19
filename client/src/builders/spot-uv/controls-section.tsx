@@ -813,7 +813,8 @@ export default function ControlsSection({
         </div>
       )}
 
-      <div className="bg-[#3a6aa0] rounded-xl border border-white/10 shadow-sm overflow-hidden">
+      <div className="designer-control-groups bg-[#3a6aa0] rounded-xl border border-white/10 shadow-sm overflow-hidden">
+        <div className="designer-control-column">
         {/* Size Selection - Collapsible */}
         <div className="border-b border-white/10">
           <button
@@ -1472,6 +1473,8 @@ export default function ControlsSection({
           )}
         </div>}
 
+        </div>
+        <div className="designer-control-column">
         {imageInfo && enableSpotColors && (
           <div className="border-b border-white/10 border-l-4 border-l-amber-400">
             <button
@@ -1867,6 +1870,7 @@ export default function ControlsSection({
             <Download className="w-5 h-5 mr-2" />
             {isProcessing ? "Processing..." : "Single Artboard Download"}
           </Button>
+        </div>
         </div>
       </div>
 

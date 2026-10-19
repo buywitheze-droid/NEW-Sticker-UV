@@ -1803,7 +1803,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     const isTransparentBg = effectiveBackground === "transparent";
 
     return (
-      <div className="w-full">
+      <div className="w-full min-w-0">
         <Card className="border-white/10 shadow-sm rounded-2xl overflow-hidden" style={{ backgroundColor: "#3a6aa0" }}>
           <CardContent className="p-0">
             {/* Design info + preview background swatches — hidden in the admin read-only view. */}
@@ -1885,11 +1885,11 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
               )}
             </div>}
 
-            <div className="flex flex-col items-start">
-              <div className="flex w-full">
+            <div className="flex min-w-0 flex-col items-start">
+              <div className="flex w-full min-w-0">
                 <div
                   ref={frameRef}
-                  className={`relative w-full ${showHighlight ? 'ring-4 ring-indigo-400 ring-opacity-75 transition-shadow duration-300' : ''} ${magicWandMode ? 'ring-2 ring-fuchsia-400 ring-opacity-70' : ''}`}
+                  className={`relative w-full min-w-0 ${showHighlight ? 'ring-4 ring-indigo-400 ring-opacity-75 transition-shadow duration-300' : ''} ${magicWandMode ? 'ring-2 ring-fuchsia-400 ring-opacity-70' : ''}`}
                   style={{
                     width: '100%',
                     height: 'auto',

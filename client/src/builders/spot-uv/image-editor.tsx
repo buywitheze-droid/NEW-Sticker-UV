@@ -2449,7 +2449,7 @@ export default function ImageEditor({
       </DialogContent>
     </Dialog>
     {mode === "gangsheet" && !gangSheetOpen && imageInfo && (
-      <div className="mb-4 flex items-center gap-3 rounded-xl border-2 border-[#4dff80]/70 bg-[#244e7a] px-3 py-2.5 shadow-lg shadow-black/30">
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border-2 border-[#4dff80]/70 bg-[#244e7a] px-3 py-2.5 shadow-lg shadow-black/30">
         <button
           type="button"
           onClick={() => { void handleAddToGangSheet(); }}
@@ -2475,7 +2475,10 @@ export default function ImageEditor({
         )}
       </div>
     )}
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+    <div
+      data-testid="designer-workspace"
+      className={`designer-workspace${isReadOnlyView ? " designer-workspace--readonly" : gangSheetOpen ? " designer-workspace--gangsheet" : ""}`}
+    >
       {/* Input-only uploader for Change Design; avoids mounting a second upload UI. */}
       <UploadSection
         onImageUpload={handleImageUpload}
@@ -2485,7 +2488,7 @@ export default function ImageEditor({
         inputId="spot-uv-change-design-input"
       />
       {/* Left sidebar - Settings. Hidden (not unmounted) in read-only / gangsheet view — still needed for color extraction. */}
-      <div className={isReadOnlyView || gangSheetOpen ? "hidden" : "lg:col-span-4 xl:col-span-3 space-y-3"}>
+      <div data-testid="designer-controls" className={isReadOnlyView || gangSheetOpen ? "hidden" : "designer-controls space-y-3"}>
         <ControlsSection
           strokeSettings={strokeSettings}
           resizeSettings={resizeSettings}
@@ -2540,7 +2543,7 @@ export default function ImageEditor({
         />
       </div>
       {mode === "gangsheet" && gangSheetOpen && (
-        <div className="lg:col-span-4 xl:col-span-3 space-y-3">
+        <div className="min-w-0 space-y-3">
           <GangSheetPanel
             items={gangSheetItems}
             onItemsChange={setGangSheetItems}
@@ -2553,8 +2556,8 @@ export default function ImageEditor({
       )}
       
       {/* Right area - Upload, Info, and Preview. Full width in read-only view. */}
-      <div className={isReadOnlyView ? "lg:col-span-12" : "lg:col-span-8 xl:col-span-9"}>
-        <div className="sticky top-4 space-y-3">
+      <div data-testid="designer-artboard" className="designer-artboard">
+        <div className="lg:sticky lg:top-24 space-y-3">
           {gangSheetOpen ? (
             <div className="flex items-center justify-between gap-2 bg-white rounded-lg border border-gray-100 shadow-sm px-3 py-2">
               <button
@@ -2575,7 +2578,7 @@ export default function ImageEditor({
             </div>
           ) : null}
           {/* Top row: Actions bar — edit tools only, hidden in read-only / gangsheet view */}
-          {!isReadOnlyView && !gangSheetOpen && <div className="flex items-center gap-2 bg-white rounded-lg border border-gray-100 shadow-sm px-3 py-2">
+          {!isReadOnlyView && !gangSheetOpen && <div className="flex flex-wrap items-center gap-2 bg-white rounded-lg border border-gray-100 shadow-sm px-3 py-2">
             {imageInfo && (
               <button
                 onClick={() => handleRemoveBackground(85)}
