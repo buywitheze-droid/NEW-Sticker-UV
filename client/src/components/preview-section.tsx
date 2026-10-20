@@ -591,7 +591,7 @@ const PreviewSection = forwardRef<HTMLCanvasElement, PreviewSectionProps>(
     };
 
     // Version bump forces cache invalidation when worker code changes
-    const CONTOUR_CACHE_VERSION = 32;
+    const CONTOUR_CACHE_VERSION = 33;
     const generateContourCacheKey = useCallback(() => {
       if (!imageInfo) return '';
       const bboxKey = detectedShapeInfo ? `${detectedShapeInfo.boundingBox.x},${detectedShapeInfo.boundingBox.y},${detectedShapeInfo.boundingBox.width},${detectedShapeInfo.boundingBox.height}` : 'none';

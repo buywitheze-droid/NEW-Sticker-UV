@@ -4,6 +4,10 @@ import { smoothContourCorners, type CornerStyle } from '../../../lib/contour-cor
 // Shared contour-tracing algorithm, extracted from contour-worker.ts so both the browser worker and a future Node.js service can use the same code.
 import ClipperLib from 'js-clipper';
 import { fitCompositeShape } from './composite-shape-fit';
+import { PreparedContourCache } from '../../../lib/prepared-contour-cache';
+import { compactContour, offsetPreparedContours } from '../../../lib/prepared-contour-offset';
+
+export const preparedContourCache = new PreparedContourCache();
 
 export interface Point {
   x: number;
@@ -417,6 +421,9 @@ export function processContour(
   // 4x upscaled alpha buffer via bilinear interpolation converts pixel-locked edges into smooth sub-pixel boundaries.
   const hiResWidth = width * SUPER_SAMPLE;
   const hiResHeight = height * SUPER_SAMPLE;
+  const bladeWidthInches = 0.02;
+  const includeHoles = !!strokeSettings.includeHoles;
+  const prepare = () => {
   const hiResAlpha = upscaleAlphaChannel(data, width, height, SUPER_SAMPLE);
   
   // Zero Hero skips blur entirely for max edge accuracy; normal mode blurs at radius 2 at super-sampled resolution (~0.5px original).
@@ -532,7 +539,7 @@ export function processContour(
   }
   
   if (!hasMaskPixels) {
-    return createOutputWithImage(imageData, canvasWidth, canvasHeight, padding, effectiveDPI, effectiveBackgroundColor);
+    return null;
   }
   
   postProgress(30);
@@ -540,7 +547,6 @@ export function processContour(
   const hiResDPI = effectiveDPI * SUPER_SAMPLE;
   const minComponentAreaPx = 50;
   const keepNearMainDistInches = 0.25;
-  const bladeWidthInches = 0.02;
 
   const prelimComps = labelComponents(hiResMask, hiResWidth, hiResHeight);
   const prelimDynMin = Math.max(minComponentAreaPx, 40);
@@ -616,7 +622,6 @@ export function processContour(
   }
 
   // Detect interior holes before they get filled (for Include Holes feature)
-  const includeHoles = !!strokeSettings.includeHoles;
   let holeMasks: Uint8Array[] = [];
   if (includeHoles) {
     holeMasks = detectHoles(mainComponentMask, hiResWidth, hiResHeight);
@@ -644,6 +649,32 @@ export function processContour(
     prelimCompositeDetected ? 'scattered' :
     scatteredAnalysis.isScattered ? 'scattered' : 
     complexity.needsComplexProcessing ? 'complex' : 'complex';
+
+  const sourcePaths = isZeroHero ? [] : traceAllContours(filledMainMask, hiResWidth, hiResHeight)
+    .filter(p => p.length >= 3)
+    .map(path => compactContour(path.map(p => ({ x: p.x / SUPER_SAMPLE, y: p.y / SUPER_SAMPLE }))));
+  const sourceHoles = isZeroHero ? [] : holeMasks.map(mask =>
+    traceBoundaryMarchingSquares(mask, hiResWidth, hiResHeight)
+      .map(p => ({ x: p.x / SUPER_SAMPLE, y: p.y / SUPER_SAMPLE })));
+  return {
+    // Zero Hero keeps its exact subpixel/Bezier pipeline and is not cached here.
+    // Nonzero entries retain only vectors, releasing all high-resolution masks.
+    filledMainMask: isZeroHero ? filledMainMask : new Uint8Array(0),
+    holeMasks: isZeroHero ? holeMasks : [],
+    zhField: isZeroHero ? zhField : new Uint8Array(0),
+    zhAlphaThreshold, detectedAlgorithm, prelimCompositeDetected, sourcePaths, sourceHoles,
+  };
+  };
+  const prepared = isZeroHero ? prepare() : preparedContourCache.getOrCreate(
+    data,
+    JSON.stringify([width, height, SUPER_SAMPLE, effectiveDPI, strokeSettings.alphaThreshold, includeHoles]),
+    prepare,
+  );
+  if (!prepared) {
+    return createOutputWithImage(imageData, canvasWidth, canvasHeight, padding, effectiveDPI, effectiveBackgroundColor);
+  }
+  const { filledMainMask, holeMasks, zhField, zhAlphaThreshold,
+    detectedAlgorithm, prelimCompositeDetected, sourcePaths, sourceHoles } = prepared;
 
   // Resolve effective contour mode
   type EffectiveMode = 'smooth' | 'scattered';
@@ -1180,44 +1211,10 @@ export function processContour(
 
   // ─── NORMAL MODE (non-zero stroke width) ───
 
-  let dilateRadiusHiRes = totalOffsetPixels * SUPER_SAMPLE;
-  
-  // Size guard: limit dilated mask to ~16M pixels to avoid memory blowups
-  const maxDilatedPixels = 16_000_000;
-  let actualDilateRadius = dilateRadiusHiRes;
-  const projectedWidth = hiResWidth + dilateRadiusHiRes * 2;
-  const projectedHeight = hiResHeight + dilateRadiusHiRes * 2;
-  if (projectedWidth * projectedHeight > maxDilatedPixels) {
-    const scale = Math.sqrt(maxDilatedPixels / (projectedWidth * projectedHeight));
-    actualDilateRadius = Math.max(1, Math.round(dilateRadiusHiRes * scale));
-    console.log('[Worker] Dilation radius clamped from', dilateRadiusHiRes, 'to', actualDilateRadius, 'to stay within memory limit');
-    dilateRadiusHiRes = actualDilateRadius;
-  }
-  
-  console.log('[Worker] Dilating main component by', totalOffsetPixels, 'px (', dilateRadiusHiRes, 'px at', SUPER_SAMPLE, 'x)');
-  const dilatedMask = dilateSilhouette(filledMainMask, hiResWidth, hiResHeight, dilateRadiusHiRes);
-  const dilatedWidth = hiResWidth + dilateRadiusHiRes * 2;
-  const dilatedHeight = hiResHeight + dilateRadiusHiRes * 2;
-  
+  // Offset cached protected boundaries, without allocating an expanded mask
+  // or shrinking the requested margin to satisfy a raster memory limit.
+  const scaledContours = offsetPreparedContours(sourcePaths, totalOffsetPixels);
   postProgress(50);
-
-  // Trace ALL boundaries of the dilated mask (not just the first found) so disconnected orphan shapes that survived dilation aren't dropped.
-  const allDilatedContours = traceAllContours(dilatedMask, dilatedWidth, dilatedHeight);
-
-  const validDilatedContours = allDilatedContours.filter(c => c.length >= 3);
-
-  if (validDilatedContours.length === 0) {
-    console.log('[Worker] No valid dilated contours found, returning empty');
-    return createOutputWithImage(imageData, canvasWidth, canvasHeight, padding, effectiveDPI, effectiveBackgroundColor);
-  }
-
-  // Downscale all contour points from hi-res to original resolution
-  const scaledContours = validDilatedContours.map(contour =>
-    contour.map(p => ({
-      x: (p.x - dilateRadiusHiRes) / SUPER_SAMPLE,
-      y: (p.y - dilateRadiusHiRes) / SUPER_SAMPLE
-    }))
-  );
 
   let smoothedPath: Point[];
 
@@ -1400,17 +1397,12 @@ export function processContour(
   let allPathsInInches: Array<Array<{x: number; y: number}>> | undefined;
   let allPreviewPaths: Array<Array<{x: number; y: number}>> | undefined;
 
-  if (includeHoles && holeMasks.length > 0) {
+  if (includeHoles && sourceHoles.length > 0) {
     const holePaths: Point[][] = [];
 
-    for (const holeMask of holeMasks) {
-      const boundary = traceBoundaryMarchingSquares(holeMask, hiResWidth, hiResHeight);
-      if (boundary.length < 3) continue;
-
-      let scaled = boundary.map(p => ({
-        x: p.x / SUPER_SAMPLE,
-        y: p.y / SUPER_SAMPLE
-      }));
+    for (const sourceHole of sourceHoles) {
+      if (sourceHole.length < 3) continue;
+      let scaled = sourceHole.map(p => ({ ...p }));
 
       // Shrink the hole polygon inward (negative Clipper offset) by the stroke offset so the cut doesn't eat into the design.
       if (totalOffsetPixels > 0) {

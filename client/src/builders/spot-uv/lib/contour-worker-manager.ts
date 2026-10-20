@@ -483,7 +483,9 @@ class ContourWorkerManager {
 
   // VPS tier, above the existing worker/main-thread ladder — falls straight through to the worker on any offload failure, so a flaky/unconfigured VPS never blocks tracing.
   private async processWithOffloadFallback(request: ProcessRequest, onProgress?: ProgressCallback): Promise<WorkerResult> {
-    if (this.displayOnly || request.strokeSettings.cornerMode) {
+    if (this.displayOnly || request.strokeSettings.cornerMode || request.strokeSettings.width !== 0) {
+      // Prepared-vector margins require a persistent local cache. The remote
+      // service has no version handshake for this engine; never mix results.
       // The deployed offload service has no corner-style capability handshake.
       // Explicit styles must use the local core, not silently lose the setting.
       // Preview work is deliberately local. The preview is already capped to
