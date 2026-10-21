@@ -6,6 +6,8 @@ import ClipperLib from 'js-clipper';
 import { fitCompositeShape } from './composite-shape-fit';
 import { PreparedContourCache } from '../../../lib/prepared-contour-cache';
 import { compactContour, offsetPreparedContours } from '../../../lib/prepared-contour-offset';
+import { labelContourPixels } from '../../../lib/contour-component-labels';
+import { withCenteredContours } from '../../../lib/contour-clipper-origin';
 
 export const preparedContourCache = new PreparedContourCache();
 
@@ -3663,43 +3665,8 @@ export function boundsIntersectionArea(a: BoundingBox, b: BoundingBox): number {
 
 // Trace all separate contours from a mask via connected-component labeling: flood-fill each component then trace its boundary once, returning one closed polygon per contour.
 export function traceAllContours(mask: Uint8Array, width: number, height: number): Point[][] {
-  const componentLabel = new Int32Array(width * height); // 0 = unlabeled, >0 = component ID
+  const { labels: componentLabel, count: currentLabel } = labelContourPixels(mask, width, height);
   const contours: Point[][] = [];
-  let currentLabel = 0;
-  
-  // Flood fill helper using iterative approach (avoids stack overflow)
-  function floodFillComponent(startX: number, startY: number, label: number): void {
-    const stack: Array<{x: number, y: number}> = [{x: startX, y: startY}];
-    
-    while (stack.length > 0) {
-      const {x, y} = stack.pop()!;
-      const idx = y * width + x;
-      
-      // Skip if out of bounds, not foreground, or already labeled
-      if (x < 0 || x >= width || y < 0 || y >= height) continue;
-      if (mask[idx] !== 1 || componentLabel[idx] !== 0) continue;
-      
-      // Label this pixel
-      componentLabel[idx] = label;
-      
-      // Add 4-connected neighbors (8-connected would work too)
-      stack.push({x: x + 1, y: y});
-      stack.push({x: x - 1, y: y});
-      stack.push({x: x, y: y + 1});
-      stack.push({x: x, y: y - 1});
-    }
-  }
-  
-  // First pass: label all connected components using flood fill
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      if (mask[idx] === 1 && componentLabel[idx] === 0) {
-        currentLabel++;
-        floodFillComponent(x, y, currentLabel);
-      }
-    }
-  }
   
   console.log('[Worker] traceAllContours: found', currentLabel, 'connected components');
   
@@ -4033,6 +4000,10 @@ export function processContoursWithClustering(
 
 // Multi-path Vector Merge: expand all contours by +gapPixels (now overlapping), union them, then shrink by -gapPixels — properly merges script-font letters that are close but don't physically touch.
 export function multiPathVectorMerge(contours: Point[][], gapPixels: number): Point[] {
+  return withCenteredContours(contours, paths => multiPathVectorMergeAtOrigin(paths, gapPixels));
+}
+
+function multiPathVectorMergeAtOrigin(contours: Point[][], gapPixels: number): Point[] {
   if (contours.length === 0) return [];
   if (contours.length === 1) return contours[0];
   if (gapPixels <= 0) return unionClusterContours(contours);
@@ -4539,6 +4510,10 @@ export function clipperVectorOffset(points: Point[], offsetPixels: number, useSh
 
 // Vector Closing Merge: offset OUT by +X (merges separated objects), offset IN by -X (restores straight lines), then PreserveCollinear strips redundant points — bridges gaps in script fonts/separated characters while keeping blocky designs' straight lines perfect.
 export function vectorCloseMerge(points: Point[], gapPixels: number): Point[] {
+  return withCenteredContours([points], paths => vectorCloseMergeAtOrigin(paths[0], gapPixels));
+}
+
+function vectorCloseMergeAtOrigin(points: Point[], gapPixels: number): Point[] {
   if (points.length < 3 || gapPixels <= 0) return points;
   
   console.log('[Worker] vectorCloseMerge: input', points.length, 'pts, gap:', gapPixels, 'px');
@@ -4721,6 +4696,10 @@ export function calculatePerimeter(points: Point[]): number {
 
 // cv2.approxPolyDP equivalent: Douglas-Peucker simplification with epsilon auto-scaled by perimeter (epsilonFactor default 0.001 = "rope tension").
 export function vectorWeld(path: Point[], radiusPx: number): Point[] {
+  return withCenteredContours([path], paths => vectorWeldAtOrigin(paths[0], radiusPx));
+}
+
+function vectorWeldAtOrigin(path: Point[], radiusPx: number): Point[] {
   if (path.length < 3 || radiusPx <= 0) return path;
 
   const clipperPath = path.map(p => ({
@@ -4755,6 +4734,10 @@ export function vectorWeld(path: Point[], radiusPx: number): Point[] {
 }
 
 export function enforceMinGap(path: Point[], minGapPx: number): Point[] {
+  return withCenteredContours([path], paths => enforceMinGapAtOrigin(paths[0], minGapPx));
+}
+
+function enforceMinGapAtOrigin(path: Point[], minGapPx: number): Point[] {
   if (path.length < 3 || minGapPx <= 0) return path;
 
   const clipperPath = path.map(p => ({

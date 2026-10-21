@@ -14,3 +14,9 @@ Treat Emboss Studio as an optimization reference, not a drop-in definition of a 
 **Why:** Its fast trace-once/vector-offset approach is useful, but its outer-only tracing discards interior holes and can leave disconnected artwork as separate cuts. Those semantics differ from our hole support, protected peer components, and bridge/inlet safety rules. Replacing those rules for speed risks restoring the missing-artwork bug.
 
 **How to apply:** Reuse protected artwork geometry across margin edits without bypassing component selection or safety cleanup. Keep Zero Hero's exact edge/Bezier behavior separate. Compare warm-cache results against fresh results across margins, styles, holes, and edited pixels, and report first-trace versus repeat-edit timings separately.
+
+Preserve polygon precision when optimizing Clipper: prefer integer-origin translation over reducing the coordinate scale.
+
+**Why:** Reducing quantization precision appeared harmless in isolation but changed downstream smoothing decisions on Hootz, shifting some boundaries by nearly one source pixel. Centering coordinates instead retained the original boundary to floating-point precision while allowing small enough shapes to use Clipper's faster arithmetic.
+
+**How to apply:** Compare completed cut geometry, not merely intermediate offset error. Keep large-coordinate/full-range support for shapes that cannot fit the fast range; do not sacrifice accuracy to force it.

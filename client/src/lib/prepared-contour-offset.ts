@@ -1,4 +1,5 @@
 import ClipperLib from 'js-clipper';
+import { contourOrigin } from './contour-clipper-origin';
 
 type Point = { x: number; y: number };
 const SCALE = 100000;
@@ -23,8 +24,10 @@ export function compactContour(path: Point[]): Point[] {
  */
 export function offsetPreparedContours(paths: Point[][], radius: number): Point[][] {
   if (!Number.isFinite(radius) || radius < 0) throw new Error('Invalid contour offset');
+  const origin = contourOrigin(paths);
+  const ox = origin.x * SCALE, oy = origin.y * SCALE;
   const input = paths.filter(p => p.length >= 3).map(path => {
-    const p = path.map(q => ({ X: Math.round(q.x * SCALE), Y: Math.round(q.y * SCALE) }));
+    const p = path.map(q => ({ X: Math.round(q.x * SCALE) - ox, Y: Math.round(q.y * SCALE) - oy }));
     if (ClipperLib.Clipper.Area(p) < 0) p.reverse();
     return p;
   });
@@ -35,5 +38,5 @@ export function offsetPreparedContours(paths: Point[][], radius: number): Point[
   offset.Execute(result, radius * SCALE);
   const outer = result.filter(p => p.length >= 3 && ClipperLib.Clipper.Area(p) > 0);
   if (!outer.length) throw new Error('Unable to offset prepared artwork boundaries');
-  return outer.map(path => path.map(p => ({ x: p.X / SCALE, y: p.Y / SCALE })));
+  return outer.map(path => path.map(p => ({ x: (p.X + ox) / SCALE, y: (p.Y + oy) / SCALE })));
 }

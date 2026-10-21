@@ -3,6 +3,7 @@ import '../vps/src/canvas-shim.ts';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { performance } from 'node:perf_hooks';
 import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
 import { processContour, preparedContourCache } from '../client/src/builders/spot-uv/lib/contour-trace-core';
 
 const file = process.argv[2] || 'attached_assets/HootzDecalFinal_1791307163714.png';
@@ -21,6 +22,7 @@ console.log = () => {};
 let coldMs: number;
 const margins = [.04, .07, .14, .25, .02];
 const timings: { margin: number; ms: number; vertices: number }[] = [];
+const geometry: unknown[] = [];
 try {
   preparedContourCache.clear();
   let t = performance.now();
@@ -30,10 +32,13 @@ try {
     t = performance.now();
     const result = processContour(input, { ...settings, width: margin }, 300, false);
     timings.push({ margin, ms: Math.round(performance.now() - t), vertices: result.contourData.pathPoints.length });
+    geometry.push({ margin, contour: result.contourData });
   }
   assert.equal(preparedContourCache.stats.misses, 1);
   assert.equal(preparedContourCache.stats.hits, margins.length);
 } finally { console.log = log; }
+// Optional temporary snapshot for before/after geometry comparisons.
+if (process.argv[3]) await writeFile(process.argv[3], JSON.stringify(geometry));
 console.log(JSON.stringify({
   file, dimensions: [image.width, image.height], coldMs: Math.round(coldMs!),
   warm: timings, cache: preparedContourCache.stats,
